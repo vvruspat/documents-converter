@@ -223,6 +223,18 @@ test('legacy SQLite history imports once, includes late rows and never resurrect
   assert.equal((await store.list(0, 25)).total, 1);
   assert.ok(await store.get(second));
   assert.equal((legacy.prepare('SELECT count(*) AS n FROM conversions').get() as {n: number}).n, 2);
+  const live = await store.save(Buffer.from('live source'), Buffer.from('live result'), 'live.jpg', 'image/jpeg', 1, 0);
+  legacy.prepare('DELETE FROM conversions WHERE id=?').run(second);
+  assert.deepEqual(await store.finalizeLegacyImport(), { removed: 1 });
+  await closeStore(store);
+  const afterCutover = randomUUID(); await add(afterCutover);
+  store = await openStore(storeOptions);
+  assert.equal(await store.get(first), undefined);
+  assert.equal(await store.get(second), undefined);
+  assert.equal(await store.get(afterCutover), undefined);
+  assert.ok(await store.get(live.id));
+  assert.equal((await store.list(0, 25)).total, 1);
+  assert.deepEqual(await store.finalizeLegacyImport(), { removed: 0 });
   legacy.close(); await closeStore(store);
 });
 test('PostgreSQL stores remain isolated and failed inserts leave no visible history or files', async () => {

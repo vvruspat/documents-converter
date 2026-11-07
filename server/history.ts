@@ -51,7 +51,9 @@ export class ConversionStore {
       await client.query(`CREATE INDEX IF NOT EXISTS conversion_dates ON ${this.namespace}.conversions(created_at DESC, id DESC)`);
       await client.query(`CREATE TABLE IF NOT EXISTS ${this.namespace}.legacy_conversion_imports (id UUID PRIMARY KEY, imported_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
       await client.query(`CREATE TABLE IF NOT EXISTS ${this.namespace}.pending_file_deletions (id UUID PRIMARY KEY)`);
-      const legacy = await this.readLegacy();
+      await client.query(`CREATE TABLE IF NOT EXISTS ${this.namespace}.history_migrations (key TEXT PRIMARY KEY, completed_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+      const finalized = await client.query(`SELECT key FROM ${this.namespace}.history_migrations WHERE key='sqlite-finalized'`);
+      const legacy = finalized.rowCount ? [] : await this.readLegacy();
       let imported = 0;
       for (const entry of legacy) {
         if (!validId(entry.id)) throw new Error('Invalid legacy conversion identifier');
@@ -79,6 +81,28 @@ export class ConversionStore {
     } finally { legacy.close(); }
   }
   async checkHealth(): Promise<void> { await this.ready(); await this.pool.query('SELECT 1'); }
+  // Run once after the old SQLite writer has stopped. A fresh store first imports its last rows.
+  async finalizeLegacyImport(): Promise<{ removed: number }> {
+    await this.ready();
+    const client = await this.pool.connect();
+    let removed = 0;
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`documents-converter-schema:${this.options.schema ?? 'public'}`]);
+      const finalized = await client.query(`SELECT key FROM ${this.namespace}.history_migrations WHERE key='sqlite-finalized'`);
+      if (finalized.rowCount) { await client.query('COMMIT'); return { removed: 0 }; }
+      await access(path.join(this.options.directory, 'conversions.sqlite'));
+      const legacy = await this.readLegacy();
+      const result = await client.query(`DELETE FROM ${this.namespace}.conversions WHERE id IN (SELECT id FROM ${this.namespace}.legacy_conversion_imports) AND NOT (id=ANY($1::uuid[])) RETURNING id`, [legacy.map(entry => entry.id)]);
+      removed = result.rowCount ?? 0;
+      for (const row of result.rows) await client.query(`INSERT INTO ${this.namespace}.pending_file_deletions(id) VALUES ($1) ON CONFLICT DO NOTHING`, [row.id]);
+      await client.query(`INSERT INTO ${this.namespace}.history_migrations(key) VALUES ('sqlite-finalized') ON CONFLICT DO NOTHING`);
+      await client.query('COMMIT');
+    } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
+    finally { client.release(); }
+    await this.cleanDeletedFiles();
+    return { removed };
+  }
   async list(offset: number, limit: number): Promise<{ items: HistoryEntry[]; total: number }> {
     await this.ready();
     const query = await this.pool.query(`WITH page AS (SELECT ${this.columns} FROM ${this.namespace}.conversions ORDER BY created_at DESC,id DESC LIMIT $1 OFFSET $2)
