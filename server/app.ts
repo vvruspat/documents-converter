@@ -9,12 +9,16 @@ import { exportSchema } from '../shared/document.js';
 import { createSession, passwordMatches, validSession } from './auth.js';
 import { normalizeImage, recognizeImage, UserError } from './recognize.js';
 import { exportExcel } from './excel.js';
+import { ConversionStore, safeFilename } from './history.js';
 
-export type AppConfig = { apiKey: string; model: string; password: string; sessionSecret: string; production: boolean; trustProxy?: number; commit?: string };
+export type AppConfig = { apiKey: string; model: string; password: string; sessionSecret: string; production: boolean; trustProxy?: number; commit?: string; dataDir?: string };
 
 export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   const app = express();
   if (config.production && (config.password.length < 10 || config.sessionSecret.length < 32)) throw new Error('Production requires APP_PASSWORD (at least 10 characters) and SESSION_SECRET (at least 32 characters).');
+  const history = new ConversionStore(config.dataDir ?? path.resolve('.local/data'));
+  app.locals.conversionStore = history;
+  let activeRecognitions = 0;
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy ?? 1);
   app.use(helmet({ contentSecurityPolicy: config.production ? { directives: { defaultSrc: ["'self'"], imgSrc: ["'self'", 'blob:', 'data:'], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], connectSrc: ["'self'"], objectSrc: ["'none'"], frameAncestors: ["'none'"] } } : false }));
@@ -43,9 +47,34 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   }, upload.single('image'), async (req, res) => {
     if (!req.file) throw new UserError('Выберите фотографию таблицы.');
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(req.file.mimetype)) throw new UserError('Поддерживаются только JPG, PNG и WebP.');
-    const image = await normalizeImage(req.file.buffer);
-    const document = await recognizeImage(image, config.apiKey, config.model, fetcher);
-    res.json({ document });
+    if (activeRecognitions >= 2) throw new UserError('Сервер уже обрабатывает два документа. Повторите чуть позже.', 429);
+    activeRecognitions++;
+    try {
+      const image = await normalizeImage(req.file.buffer);
+      const document = await recognizeImage(image, config.apiKey, config.model, fetcher);
+      if (!document.tables.length) throw new UserError(document.warnings[0] || 'На фотографии не найдено таблиц.', 422);
+      const input = exportSchema.parse({ documents: [{ name: safeFilename(req.file.originalname), document }] });
+      const result = await exportExcel(input);
+      const record = await history.save(req.file.buffer, result, req.file.originalname, req.file.mimetype,
+        document.tables.reduce((n, table) => n + table.rows.length, 0), document.warnings.length + document.tables.reduce((n, table) => n + table.uncertainCells.length, 0));
+      res.json({ document, conversion: record });
+    } finally { activeRecognitions--; }
+  });
+  app.get('/api/history', (req, res) => {
+    const input = z.object({ offset: z.coerce.number().int().min(0).max(1_000_000).default(0), limit: z.coerce.number().int().min(1).max(50).default(25) }).safeParse(req.query);
+    if (!input.success) throw new UserError('Некорректная страница истории.');
+    res.json(history.list(input.data.offset, input.data.limit));
+  });
+  app.get('/api/history/:id/:kind', (req, res, next) => {
+    const id = String(req.params.id); const kind = String(req.params.kind);
+    if (kind !== 'source' && kind !== 'result') throw new UserError('Файл не найден.', 404);
+    const record = history.get(id);
+    if (!record) throw new UserError('Файл не найден.', 404);
+    res.download(history.filePath(id, kind), kind === 'source' ? record.originalName : record.resultName, error => { if (error && !res.headersSent) next(new UserError('Файл не найден.', 404)); });
+  });
+  app.delete('/api/history/:id', async (req, res) => {
+    if (!await history.delete(String(req.params.id))) throw new UserError('Конвертация не найдена.', 404);
+    res.json({ ok: true });
   });
   app.post('/api/export', rateLimit({ windowMs: 60_000, limit: 20, message: { error: 'Слишком много скачиваний. Повторите через минуту.' } }), async (req, res) => {
     const input = exportSchema.safeParse(req.body);

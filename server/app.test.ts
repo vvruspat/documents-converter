@@ -3,13 +3,18 @@ import assert from 'node:assert/strict';
 import request from 'supertest';
 import sharp from 'sharp';
 import ExcelJS from 'exceljs';
+import { mkdtempSync } from 'node:fs';
+import { readFile, readdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { createApp, type AppConfig } from './app.js';
 import { createSession, passwordMatches, validSession } from './auth.js';
 import { cellValue, exportExcel } from './excel.js';
 import { parseDocument, recognizeImage, normalizeImage } from './recognize.js';
 import { documentSchema, exportSchema, type ExtractedDocument } from '../shared/document.js';
+import { ConversionStore, safeFilename } from './history.js';
 
-const config: AppConfig = { apiKey: 'server-only-test-key', model: 'test/vision', password: 'a-test-password', sessionSecret: 'a-test-session-secret-with-32-characters', production: false };
+const config: AppConfig = { apiKey: 'server-only-test-key', model: 'test/vision', password: 'a-test-password', sessionSecret: 'a-test-session-secret-with-32-characters', production: false, dataDir: mkdtempSync(path.join(tmpdir(), 'documents-converter-api-test-')) };
 const fixture: ExtractedDocument = {
   title: 'Реестр', context: ['Приложение №1'], warnings: [],
   tables: [{ title: 'Материалы', columns: ['№', 'Материал', 'Документ', 'Дата', 'Листов'], rows: [['1', 'Бетон', '000007900', '08.10.2025', '1'], ['2', '=HYPERLINK("https://example.com")', '000007909', '31.02.2025', '2']], uncertainCells: [{ row: 1, column: 3, note: 'Проверьте дату' }] }],
@@ -95,6 +100,9 @@ test('API authorizes conversion and export before reading uploads', async () => 
   const app = createApp(config, mock);
   await request(app).post('/api/recognize').expect(401);
   await request(app).post('/api/export').send({ documents: [] }).expect(401);
+  await request(app).get('/api/history').expect(401);
+  await request(app).get('/api/history/00000000-0000-4000-8000-000000000000/source').expect(401);
+  await request(app).delete('/api/history/00000000-0000-4000-8000-000000000000').expect(401);
   const session = await request(app).get('/api/session').expect(200); assert.equal(session.body.authenticated, false);
   const health = await request(app).get('/api/health').expect(200); assert.equal(health.body.status, 'ok');
 });
@@ -118,9 +126,39 @@ test('real API entry points recognize a photo through the adapter and export the
   const app = createApp(config, mock);
   const result = await request(app).post('/api/recognize').set('Cookie', cookie()).attach('image', await image(), { filename: 'a.jpg', contentType: 'image/jpeg' }).expect(200);
   assert.deepEqual(result.body.document, fixture);
+  assert.equal(result.body.conversion.originalName, 'a.jpg');
+  const id = result.body.conversion.id;
+  const list = await request(app).get('/api/history').set('Cookie', cookie()).expect(200);
+  assert.ok(list.body.items.some((entry: {id: string}) => entry.id === id));
+  await request(app).get(`/api/history/${id}/source`).set('Cookie', cookie()).expect(200);
+  await request(app).get(`/api/history/${id}/result`).set('Cookie', cookie()).expect(200);
+  await request(app).get('/api/history?limit=99999').set('Cookie', cookie()).expect(400);
   result.body.document.tables[0].rows[0][1] = 'Исправленное значение';
   const output = await request(app).post('/api/export').set('Cookie', cookie()).send({ documents: [{ name: 'a.jpg', document: result.body.document }] }).buffer(true).parse((res, done) => { const chunks: Buffer[] = []; res.on('data', chunk => chunks.push(Buffer.from(chunk))); res.on('end', () => done(null, Buffer.concat(chunks))); }).expect(200);
   assert.match(output.headers['content-type'], /spreadsheetml/);
   const book = new ExcelJS.Workbook(); await book.xlsx.load(output.body);
   assert.ok(book.worksheets[0].getColumn(2).values.includes('Исправленное значение'));
+  await request(app).delete(`/api/history/${id}`).set('Cookie', cookie()).expect(200);
+  await request(app).get(`/api/history/${id}/source`).set('Cookie', cookie()).expect(404);
+  await request(app).get(`/api/history/${id}/result`).set('Cookie', cookie()).expect(404);
+  await request(app).delete(`/api/history/${id}`).set('Cookie', cookie()).expect(404);
+});
+test('history survives reopening storage and deleting a conversion removes both files', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'documents-converter-history-test-'));
+  let store = new ConversionStore(directory);
+  const source = await image();
+  const entry = await store.save(source, Buffer.from('xlsx result'), 'Документ.jpg', 'image/jpeg', 18, 0);
+  store.close(); store = new ConversionStore(directory);
+  assert.deepEqual({ ...store.get(entry.id) }, entry);
+  assert.equal(store.list(0, 25).total, 1);
+  assert.equal(store.list(0, 25).items[0].resultName, 'Документ.xlsx');
+  assert.deepEqual(await readFile(store.filePath(entry.id, 'source')), source);
+  assert.equal(store.get('../../etc/passwd'), undefined);
+  assert.throws(() => store.filePath('../../etc/passwd', 'source'));
+  await store.delete(entry.id);
+  assert.equal(store.list(0, 25).total, 0);
+  assert.deepEqual(await readdir(path.join(directory, 'files')), []);
+  store.close();
+  const mojibake = Buffer.from('Документ.jpg', 'utf8').toString('latin1');
+  assert.equal(safeFilename(mojibake), 'Документ.jpg');
 });
