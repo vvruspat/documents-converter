@@ -70,7 +70,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
     if (kind !== 'source' && kind !== 'result') throw new UserError('Файл не найден.', 404);
     const record = history.get(id);
     if (!record) throw new UserError('Файл не найден.', 404);
-    res.download(history.filePath(id, kind), kind === 'source' ? record.originalName : record.resultName, error => { if (error && !res.headersSent) next(new UserError('Файл не найден.', 404)); });
+    res.download(history.filePath(id, kind), kind === 'source' ? record.originalName : record.resultName, { dotfiles: 'allow' }, error => { if (error && !res.headersSent) next(new UserError('Файл не найден.', 404)); });
   });
   app.delete('/api/history/:id', async (req, res) => {
     if (!await history.delete(String(req.params.id))) throw new UserError('Конвертация не найдена.', 404);

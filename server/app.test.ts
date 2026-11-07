@@ -14,7 +14,7 @@ import { parseDocument, recognizeImage, normalizeImage } from './recognize.js';
 import { documentSchema, exportSchema, type ExtractedDocument } from '../shared/document.js';
 import { ConversionStore, safeFilename } from './history.js';
 
-const config: AppConfig = { apiKey: 'server-only-test-key', model: 'test/vision', password: 'a-test-password', sessionSecret: 'a-test-session-secret-with-32-characters', production: false, dataDir: mkdtempSync(path.join(tmpdir(), 'documents-converter-api-test-')) };
+const config: AppConfig = { apiKey: 'server-only-test-key', model: 'test/vision', password: 'a-test-password', sessionSecret: 'a-test-session-secret-with-32-characters', production: false, dataDir: path.join(mkdtempSync(path.join(tmpdir(), 'documents-converter-api-test-')), '.local', 'data') };
 const fixture: ExtractedDocument = {
   title: 'Реестр', context: ['Приложение №1'], warnings: [],
   tables: [{ title: 'Материалы', columns: ['№', 'Материал', 'Документ', 'Дата', 'Листов'], rows: [['1', 'Бетон', '000007900', '08.10.2025', '1'], ['2', '=HYPERLINK("https://example.com")', '000007909', '31.02.2025', '2']], uncertainCells: [{ row: 1, column: 3, note: 'Проверьте дату' }] }],
