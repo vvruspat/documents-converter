@@ -119,6 +119,9 @@ test('login protects the key and uses an HttpOnly cookie', async () => {
 test('same-origin browser requests are required and unsupported uploads rejected', async () => {
   const app = createApp(config, mock);
   await request(app).post('/api/export').set('Cookie', cookie()).set('Origin', 'https://attacker.example').send({ documents: [] }).expect(403);
+  await request(app).delete('/api/history/00000000-0000-4000-8000-000000000000').set('Cookie', cookie()).set('Origin', 'http://127.0.0.1:5173').expect(404);
+  const productionApp = createApp({ ...config, production: true }, mock);
+  await request(productionApp).delete('/api/history/00000000-0000-4000-8000-000000000000').set('Origin', 'http://127.0.0.1:5173').set('Cookie', cookie()).expect(403);
   await request(app).post('/api/recognize').set('Cookie', cookie()).attach('image', Buffer.from('fake'), { filename: 'a.jpg', contentType: 'image/jpeg' }).expect(400);
   await request(app).post('/api/recognize').set('Cookie', cookie()).attach('image', Buffer.from('<svg/>'), { filename: 'a.svg', contentType: 'image/svg+xml' }).expect(400);
 });

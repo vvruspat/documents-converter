@@ -27,7 +27,10 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   app.get('/api/health', (_req, res) => { res.json({ status: 'ok', commit: config.commit ?? 'development' }); });
   app.use('/api', express.json({ limit: '4mb' }));
   app.use('/api', (req, res, next) => {
-    if (req.method !== 'GET' && req.headers.origin && req.headers.origin !== `${req.protocol}://${req.get('host')}`) { res.status(403).json({ error: 'Запрос с другого сайта запрещён.' }); return; }
+    const origin = req.headers.origin;
+    const sameOrigin = !origin || origin === `${req.protocol}://${req.get('host')}`;
+    const localPreview = !config.production && origin === 'http://127.0.0.1:5173';
+    if (req.method !== 'GET' && !sameOrigin && !localPreview) { res.status(403).json({ error: 'Запрос с другого сайта запрещён.' }); return; }
     next();
   });
   const authenticated = (req: express.Request) => !config.password || validSession(req.cookies['dc_session'], config.sessionSecret, config.password);
