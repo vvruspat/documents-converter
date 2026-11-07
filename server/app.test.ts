@@ -1,20 +1,47 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import request from 'supertest';
 import sharp from 'sharp';
 import ExcelJS from 'exceljs';
 import { mkdtempSync } from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+import { Pool } from 'pg';
 import { createApp, type AppConfig } from './app.js';
 import { createSession, passwordMatches, validSession } from './auth.js';
 import { cellValue, exportExcel } from './excel.js';
 import { parseDocument, recognizeImage, normalizeImage } from './recognize.js';
 import { documentSchema, exportSchema, type ExtractedDocument } from '../shared/document.js';
-import { ConversionStore, safeFilename } from './history.js';
+import { ConversionStore, safeFilename, type StoreOptions } from './history.js';
 
-const config: AppConfig = { apiKey: 'server-only-test-key', model: 'test/vision', password: 'a-test-password', sessionSecret: 'a-test-session-secret-with-32-characters', production: false, dataDir: path.join(mkdtempSync(path.join(tmpdir(), 'documents-converter-api-test-')), '.local', 'data') };
+const databaseUrl = process.env.TEST_DATABASE_URL;
+if (!databaseUrl) throw new Error('Set TEST_DATABASE_URL to a PostgreSQL test database before running tests.');
+const database = new Pool({ connectionString: databaseUrl, max: 2, connectionTimeoutMillis: 5000 });
+const schemas: string[] = [], directories: string[] = [];
+const openStores = new Set<ConversionStore>();
+async function options(): Promise<StoreOptions> {
+  const schema = `dc_test_${randomUUID().replaceAll('-', '')}`;
+  await database.query(`CREATE SCHEMA "${schema}"`); schemas.push(schema);
+  const directory = path.join(mkdtempSync(path.join(tmpdir(), 'documents-converter-test-')), '.local', 'data');
+  directories.push(path.resolve(directory, '../..'));
+  return { directory, schema, connectionString: databaseUrl! };
+}
+async function openStore(value: StoreOptions): Promise<ConversionStore> {
+  const store = new ConversionStore(value); openStores.add(store); await store.ready(); return store;
+}
+async function closeStore(store: ConversionStore): Promise<void> { if (openStores.delete(store)) await store.close(); }
+after(async () => {
+  await Promise.all([...openStores].map(closeStore));
+  for (const schema of schemas) await database.query(`DROP SCHEMA "${schema}" CASCADE`);
+  await database.end();
+  await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true })));
+});
+const sharedOptions = await options();
+const sharedStore = await openStore(sharedOptions);
+const config: AppConfig = { apiKey: 'server-only-test-key', model: 'test/vision', password: 'a-test-password', sessionSecret: 'a-test-session-secret-with-32-characters', production: false, dataDir: sharedOptions.directory, historyStore: sharedStore };
 const fixture: ExtractedDocument = {
   title: 'Реестр', context: ['Приложение №1'], warnings: [],
   tables: [{ title: 'Материалы', columns: ['№', 'Материал', 'Документ', 'Дата', 'Листов'], rows: [['1', 'Бетон', '000007900', '08.10.2025', '1'], ['2', '=HYPERLINK("https://example.com")', '000007909', '31.02.2025', '2']], uncertainCells: [{ row: 1, column: 3, note: 'Проверьте дату' }] }],
@@ -36,6 +63,7 @@ test('production requires authentication and permits a six-character password', 
   assert.throws(() => createApp({ ...config, production: true, password: '' }), /APP_PASSWORD/);
   assert.throws(() => createApp({ ...config, production: true, password: 'abc12' }), /APP_PASSWORD/);
   assert.throws(() => createApp({ ...config, production: true, password: 'abc123', sessionSecret: '' }), /SESSION_SECRET/);
+  assert.throws(() => createApp({ ...config, production: true, historyStore: undefined, databaseUrl: '' }), /DATABASE_URL/);
   const app = createApp({ ...config, production: true, password: 'abc123' });
   await request(app).post('/api/login').send({ password: 'abc123' }).expect(200);
 });
@@ -151,21 +179,60 @@ test('real API entry points recognize a photo through the adapter and export the
   await request(app).delete(`/api/history/${id}`).set('Cookie', cookie()).expect(404);
 });
 test('history survives reopening storage and deleting a conversion removes both files', async () => {
-  const directory = mkdtempSync(path.join(tmpdir(), 'documents-converter-history-test-'));
-  let store = new ConversionStore(directory);
+  const storeOptions = await options();
+  let store = await openStore(storeOptions);
   const source = await image();
   const entry = await store.save(source, Buffer.from('xlsx result'), 'Документ.jpg', 'image/jpeg', 18, 0);
-  store.close(); store = new ConversionStore(directory);
-  assert.deepEqual({ ...store.get(entry.id) }, entry);
-  assert.equal(store.list(0, 25).total, 1);
-  assert.equal(store.list(0, 25).items[0].resultName, 'Документ.xlsx');
+  await closeStore(store); store = await openStore(storeOptions);
+  assert.deepEqual(await store.get(entry.id), entry);
+  assert.equal((await store.list(0, 25)).total, 1);
+  assert.equal((await store.list(0, 25)).items[0].resultName, 'Документ.xlsx');
   assert.deepEqual(await readFile(store.filePath(entry.id, 'source')), source);
-  assert.equal(store.get('../../etc/passwd'), undefined);
+  assert.equal(await store.get('../../etc/passwd'), undefined);
   assert.throws(() => store.filePath('../../etc/passwd', 'source'));
   await store.delete(entry.id);
-  assert.equal(store.list(0, 25).total, 0);
-  assert.deepEqual(await readdir(path.join(directory, 'files')), []);
-  store.close();
+  assert.equal((await store.list(0, 25)).total, 0);
+  assert.deepEqual(await readdir(path.join(storeOptions.directory, 'files')), []);
+  await closeStore(store);
   const mojibake = Buffer.from('Документ.jpg', 'utf8').toString('latin1');
   assert.equal(safeFilename(mojibake), 'Документ.jpg');
+});
+test('legacy SQLite history imports once, includes late rows and never resurrects deleted conversions', async () => {
+  const storeOptions = await options();
+  await mkdir(path.join(storeOptions.directory, 'files'), { recursive: true });
+  const filename = path.join(storeOptions.directory, 'conversions.sqlite');
+  const legacy = new DatabaseSync(filename);
+  legacy.exec('CREATE TABLE conversions (id TEXT PRIMARY KEY, original_name TEXT, result_name TEXT, original_mime TEXT, created_at TEXT, row_count INTEGER, warning_count INTEGER)');
+  const first = randomUUID(), second = randomUUID();
+  const add = async (id: string) => {
+    await writeFile(path.join(storeOptions.directory, 'files', `${id}.source`), 'source');
+    await writeFile(path.join(storeOptions.directory, 'files', `${id}.xlsx`), 'result');
+    legacy.prepare('INSERT INTO conversions VALUES (?,?,?,?,?,?,?)').run(id, 'source.jpg', 'result.xlsx', 'image/jpeg', '2025-10-08T12:34:56.000Z', 18, 0);
+  };
+  await add(first);
+  let store = await openStore(storeOptions);
+  assert.equal((await store.list(0, 25)).total, 1);
+  assert.equal((await store.get(first))!.createdAt, '2025-10-08T12:34:56.000Z');
+  await closeStore(store);
+  await add(second);
+  store = await openStore(storeOptions);
+  assert.equal((await store.list(0, 25)).total, 2);
+  await store.delete(first); await closeStore(store);
+  store = await openStore(storeOptions);
+  assert.equal(await store.get(first), undefined);
+  assert.equal((await store.list(0, 25)).total, 1);
+  assert.ok(await store.get(second));
+  assert.equal((legacy.prepare('SELECT count(*) AS n FROM conversions').get() as {n: number}).n, 2);
+  legacy.close(); await closeStore(store);
+});
+test('PostgreSQL stores remain isolated and failed inserts leave no visible history or files', async () => {
+  const oneOptions = await options(), twoOptions = await options();
+  const one = await openStore(oneOptions), two = await openStore(twoOptions);
+  const entry = await one.save(Buffer.from('source'), Buffer.from('result'), 'a.jpg', 'image/jpeg', 1, 0);
+  assert.equal(await two.get(entry.id), undefined);
+  assert.equal((await two.list(0, 25)).total, 0);
+  await assert.rejects(two.save(Buffer.from('source'), Buffer.from('result'), 'bad.jpg', 'image/jpeg', -1, 0));
+  assert.deepEqual(await readdir(path.join(twoOptions.directory, 'files')), []);
+  assert.equal((await two.list(0, 25)).total, 0);
+  await closeStore(one); await closeStore(two);
 });

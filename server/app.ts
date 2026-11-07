@@ -11,12 +11,12 @@ import { normalizeImage, recognizeImage, UserError } from './recognize.js';
 import { exportExcel } from './excel.js';
 import { ConversionStore, safeFilename } from './history.js';
 
-export type AppConfig = { apiKey: string; model: string; password: string; sessionSecret: string; production: boolean; trustProxy?: number; commit?: string; dataDir?: string };
+export type AppConfig = { apiKey: string; model: string; password: string; sessionSecret: string; production: boolean; trustProxy?: number; commit?: string; dataDir?: string; databaseUrl?: string; historyStore?: ConversionStore };
 
 export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   const app = express();
   if (config.production && (config.password.length < 6 || config.sessionSecret.length < 32)) throw new Error('Production requires APP_PASSWORD (at least 6 characters) and SESSION_SECRET (at least 32 characters).');
-  const history = new ConversionStore(config.dataDir ?? path.resolve('.local/data'));
+  const history = config.historyStore ?? new ConversionStore({ directory: config.dataDir ?? path.resolve('.local/data'), connectionString: config.databaseUrl ?? '' });
   app.locals.conversionStore = history;
   let activeRecognitions = 0;
   app.disable('x-powered-by');
@@ -24,7 +24,10 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   app.use(helmet({ contentSecurityPolicy: config.production ? { directives: { defaultSrc: ["'self'"], imgSrc: ["'self'", 'blob:', 'data:'], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], connectSrc: ["'self'"], objectSrc: ["'none'"], frameAncestors: ["'none'"] } } : false }));
   app.use(cookieParser());
   app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
-  app.get('/api/health', (_req, res) => { res.json({ status: 'ok', commit: config.commit ?? 'development' }); });
+  app.get('/api/health', async (_req, res) => {
+    try { await history.checkHealth(); res.json({ status: 'ok', commit: config.commit ?? 'development', database: 'postgresql' }); }
+    catch { res.status(503).json({ status: 'unavailable', commit: config.commit ?? 'development' }); }
+  });
   app.use('/api', express.json({ limit: '4mb' }));
   app.use('/api', (req, res, next) => {
     const origin = req.headers.origin;
@@ -63,15 +66,15 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
       res.json({ document, conversion: record });
     } finally { activeRecognitions--; }
   });
-  app.get('/api/history', (req, res) => {
+  app.get('/api/history', async (req, res) => {
     const input = z.object({ offset: z.coerce.number().int().min(0).max(1_000_000).default(0), limit: z.coerce.number().int().min(1).max(50).default(25) }).safeParse(req.query);
     if (!input.success) throw new UserError('Некорректная страница истории.');
-    res.json(history.list(input.data.offset, input.data.limit));
+    res.json(await history.list(input.data.offset, input.data.limit));
   });
-  app.get('/api/history/:id/:kind', (req, res, next) => {
+  app.get('/api/history/:id/:kind', async (req, res, next) => {
     const id = String(req.params.id); const kind = String(req.params.kind);
     if (kind !== 'source' && kind !== 'result') throw new UserError('Файл не найден.', 404);
-    const record = history.get(id);
+    const record = await history.get(id);
     if (!record) throw new UserError('Файл не найден.', 404);
     res.download(history.filePath(id, kind), kind === 'source' ? record.originalName : record.resultName, { dotfiles: 'allow' }, error => { if (error && !res.headersSent) next(new UserError('Файл не найден.', 404)); });
   });
