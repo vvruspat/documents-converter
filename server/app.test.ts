@@ -32,8 +32,12 @@ test('signed sessions reject forgery, expiration and password changes', () => {
   assert.equal(validSession({}, config.sessionSecret, config.password), false);
   assert.ok(passwordMatches('abc', 'abc')); assert.equal(passwordMatches('abc', 'abcd'), false);
 });
-test('production refuses missing authentication configuration', () => {
+test('production requires authentication and permits a six-character password', async () => {
   assert.throws(() => createApp({ ...config, production: true, password: '' }), /APP_PASSWORD/);
+  assert.throws(() => createApp({ ...config, production: true, password: 'abc12' }), /APP_PASSWORD/);
+  assert.throws(() => createApp({ ...config, production: true, password: 'abc123', sessionSecret: '' }), /SESSION_SECRET/);
+  const app = createApp({ ...config, production: true, password: 'abc123' });
+  await request(app).post('/api/login').send({ password: 'abc123' }).expect(200);
 });
 test('recognition validates all rows and uncertainty coordinates', () => {
   assert.deepEqual(parseDocument(JSON.stringify(fixture)), fixture);

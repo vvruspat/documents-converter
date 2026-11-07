@@ -15,7 +15,7 @@ export type AppConfig = { apiKey: string; model: string; password: string; sessi
 
 export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   const app = express();
-  if (config.production && (config.password.length < 10 || config.sessionSecret.length < 32)) throw new Error('Production requires APP_PASSWORD (at least 10 characters) and SESSION_SECRET (at least 32 characters).');
+  if (config.production && (config.password.length < 6 || config.sessionSecret.length < 32)) throw new Error('Production requires APP_PASSWORD (at least 6 characters) and SESSION_SECRET (at least 32 characters).');
   const history = new ConversionStore(config.dataDir ?? path.resolve('.local/data'));
   app.locals.conversionStore = history;
   let activeRecognitions = 0;

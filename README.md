@@ -34,7 +34,7 @@ npm start
 | --- | --- |
 | `OPENROUTER_API_KEY` | Секретный ключ OpenRouter |
 | `OPENROUTER_MODEL` | `google/gemini-2.5-flash` по умолчанию |
-| `APP_PASSWORD` | Пароль входа, минимум 10 символов |
+| `APP_PASSWORD` | Пароль входа, минимум 6 символов |
 | `SESSION_SECRET` | Случайный секрет не короче 32 символов |
 | `NODE_ENV` | `production` |
 | `PORT` | `3001` |
