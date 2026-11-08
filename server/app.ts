@@ -91,7 +91,9 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   });
   app.use('/api', (_req, res) => { res.status(404).json({ error: 'Страница API не найдена.' }); });
   const client = path.resolve(process.cwd(), 'dist/client');
-  app.use(express.static(client, { maxAge: '1h', index: false }));
+  // A missing bundle must be a real 404, never the SPA's HTML with a 200 status.
+  app.use('/assets', express.static(path.join(client, 'assets'), { maxAge: '1y', immutable: true }), (_req, res) => { res.status(404).set('Cache-Control', 'no-store').type('text').send('Asset not found'); });
+  app.use(express.static(client, { maxAge: 0, index: false, setHeaders: res => { res.set('Cache-Control', 'no-cache'); } }));
   app.get('/{*splat}', (_req, res) => { res.set('Cache-Control', 'no-cache').sendFile(path.join(client, 'index.html')); });
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     if (error instanceof multer.MulterError) { res.status(400).json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'Фото слишком большое. Максимальный размер — 12 МБ.' : 'Загрузите одно изображение без дополнительных полей.' }); return; }

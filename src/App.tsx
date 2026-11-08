@@ -4,8 +4,11 @@ import type { HistoryEntry } from '../shared/history';
 
 type Job = { id: string; file: File; status: 'queued' | 'working' | 'done' | 'error'; result?: HistoryEntry; error?: string };
 type Page = 'convert' | 'history';
+let nextJobId = 0;
 export function App() {
   const [auth, setAuth] = useState<boolean | null>(null);
+  const [connectionFailed, setConnectionFailed] = useState(false);
+  const [sessionAttempt, setSessionAttempt] = useState(0);
   const [passwordRequired, setPasswordRequired] = useState(false);
   const [password, setPassword] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
@@ -29,7 +32,17 @@ export function App() {
     return response;
   }
   useEffect(() => {
-    fetch('/api/session').then(r => { if (!r.ok) throw new Error(); return r.json(); }).then(d => { setAuth(d.authenticated); setPasswordRequired(d.passwordRequired); }).catch(() => { setError('Не удалось подключиться к серверу.'); setAuth(false); });
+    let cancelled = false;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 12000);
+    setConnectionFailed(false);
+    fetch('/api/session', { signal: controller.signal }).then(r => { if (!r.ok) throw new Error(); return r.json(); }).then(d => {
+      if (typeof d.authenticated !== 'boolean' || typeof d.passwordRequired !== 'boolean') throw new Error();
+      if (!cancelled) { setAuth(d.authenticated); setPasswordRequired(d.passwordRequired); }
+    }).catch(() => { if (!cancelled) setConnectionFailed(true); }).finally(() => window.clearTimeout(timeout));
+    return () => { cancelled = true; window.clearTimeout(timeout); controller.abort(); };
+  }, [sessionAttempt]);
+  useEffect(() => {
     const popstate = () => setPage(location.pathname === '/history' ? 'history' : 'convert');
     addEventListener('popstate', popstate); return () => removeEventListener('popstate', popstate);
   }, []);
@@ -62,7 +75,8 @@ export function App() {
       if (jobs.length + added.length >= 10) { errors.push('До 10 файлов за раз. Очистите список, чтобы добавить новые.'); break; }
       if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { errors.push(`${file.name}: нужен JPG, PNG или WebP.`); continue; }
       if (file.size > 12 * 1024 * 1024 || !file.size) { errors.push(`${file.name}: допустимый размер — до 12 МБ.`); continue; }
-      added.push({ id: crypto.randomUUID(), file, status: 'queued' });
+      // This ID only identifies a local queue item; server records use their own UUIDs.
+      added.push({ id: `job-${++nextJobId}`, file, status: 'queued' });
     }
     setJobs(prev => [...prev, ...added]); setError([...new Set(errors)].join(' '));
     if (input.current) input.current.value = '';
@@ -85,7 +99,8 @@ export function App() {
     try { await request(`/api/history/${entry.id}`, { method: 'DELETE' }); setJobs(prev => prev.filter(j => j.result?.id !== entry.id)); await loadHistory(); }
     catch (e) { setError((e as Error).message); } finally { setDeleting(''); }
   }
-  if (auth === null) return <main className="loading"><LoaderCircle className="spin" size={19} /></main>;
+  if (connectionFailed) return <main className="login"><div className="connection-error" role="alert"><h1>Нет соединения с сервером</h1><p>Проверьте интернет и попробуйте ещё раз.</p><button className="button" onClick={() => { setConnectionFailed(false); setSessionAttempt(n => n + 1); }}>Повторить</button></div></main>;
+  if (auth === null) return <main className="loading" role="status"><LoaderCircle className="spin" size={19} /><span>Подключение…</span></main>;
   if (!auth) return <main className="login"><form onSubmit={login}><span className="logo-mark"><FileSpreadsheet size={23} /></span><h1>Фото в Excel</h1><label htmlFor="password">Пароль</label><input id="password" type="password" autoComplete="current-password" required autoFocus value={password} onChange={e => setPassword(e.target.value)} />{error && <p className="error-text" role="alert">{error}</p>}<button className="button primary" disabled={loggingIn}>{loggingIn && <LoaderCircle className="spin" size={17} />} Войти</button></form></main>;
   return <div className="app"><header><a className="brand" href="/" onClick={e => { e.preventDefault(); navigate('convert'); }}><span className="logo-mark"><FileSpreadsheet size={19} /></span>Фото в Excel</a><nav aria-label="Навигация"><a href="/" className={page === 'convert' ? 'active' : ''} aria-current={page === 'convert' ? 'page' : undefined} onClick={e => { e.preventDefault(); navigate('convert'); }}>Конвертер</a><a href="/history" className={page === 'history' ? 'active' : ''} aria-current={page === 'history' ? 'page' : undefined} onClick={e => { e.preventDefault(); navigate('history'); }}>История</a></nav>{passwordRequired && <button className="icon-button logout" title="Выйти" aria-label="Выйти" onClick={logout} disabled={busy}><LogOut size={16} /></button>}</header>
     <main className="content">{error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Закрыть сообщение" onClick={() => setError('')}><X size={16} /></button></div>}

@@ -248,3 +248,14 @@ test('PostgreSQL stores remain isolated and failed inserts leave no visible hist
   assert.equal((await two.list(0, 25)).total, 0);
   await closeStore(one); await closeStore(two);
 });
+
+// Old cached HTML can request a bundle that disappeared during a deployment.
+test('missing JavaScript and CSS assets return an uncached 404 instead of SPA HTML', async () => {
+  const app = createApp(config);
+  for (const asset of ['stale-build.js', 'stale-build.css']) {
+    const result = await request(app).get(`/assets/${asset}`).expect(404);
+    assert.match(result.headers['content-type'], /^text\/plain/);
+    assert.equal(result.headers['cache-control'], 'no-store');
+    assert.doesNotMatch(result.text, /<!doctype|<html/i);
+  }
+});

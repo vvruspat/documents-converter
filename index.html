@@ -1,2 +1,27 @@
 <!doctype html>
-<html lang="ru"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="theme-color" content="#176d50" /><meta name="description" content="Превратите фотографию документа в редактируемую таблицу Excel." /><title>Фото в Excel — конвертер документов</title><link rel="icon" type="image/svg+xml" href="/favicon.svg" /></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#176d50" />
+    <meta name="description" content="Превратите фотографию документа в редактируемую таблицу Excel." />
+    <title>Фото в Excel — конвертер документов</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script src="/startup.js" defer></script>
+  </head>
+  <body style="margin:0;background:#fff;color:#242c28;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif">
+    <div id="root">
+      <main id="startup" style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box">
+        <div style="width:300px;max-width:100%;font-size:14px;line-height:1.6">
+          <h1 style="font-size:23px;font-weight:550;margin:0 0 18px">Фото в Excel</h1>
+          <p id="startup-status" role="status">Загрузка…</p>
+          <p id="startup-help" hidden>Не удалось запустить страницу. Обновите её. Если ошибка повторится, попробуйте другой браузер или сеть.</p>
+          <a id="startup-reload" href="" style="color:#21694f">Обновить страницу</a>
+          <p id="startup-code" hidden style="font-size:11px;color:#909893"></p>
+          <noscript><p>Для работы сервиса включите JavaScript в настройках браузера.</p></noscript>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
