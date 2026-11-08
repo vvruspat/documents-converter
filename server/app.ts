@@ -22,6 +22,29 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy ?? 1);
   app.use(helmet({ contentSecurityPolicy: config.production ? { directives: { defaultSrc: ["'self'"], imgSrc: ["'self'", 'blob:', 'data:'], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], connectSrc: ["'self'"], objectSrc: ["'none'"], frameAncestors: ["'none'"] } } : false }));
+  // Plain text works even when the browser cannot load or parse the frontend.
+  app.get('/diagnostics', (req, res) => {
+    const agent = (req.get('user-agent') || '').slice(0, 1000);
+    const browsers: [string, RegExp][] = [
+      ['Яндекс Браузер', /YaBrowser\/([\d.]+)/],
+      ['Microsoft Edge', /Edg(?:A|iOS)?\/([\d.]+)/],
+      ['Microsoft Edge (старая версия)', /Edge\/([\d.]+)/],
+      ['Opera', /OPR\/([\d.]+)/],
+      ['Firefox', /(?:Firefox|FxiOS)\/([\d.]+)/],
+      ['Chrome', /(?:Chrome|CriOS)\/([\d.]+)/],
+      ['Safari', /Version\/([\d.]+).*Safari\//],
+      ['Internet Explorer', /(?:MSIE |rv:)([\d.]+)/],
+    ];
+    const detected = browsers.map(([name, pattern]) => ({ name, match: agent.match(pattern) })).find(browser => browser.match);
+    res.set('Cache-Control', 'no-store').type('text').send([
+      'Фото в Excel — проверка браузера', '',
+      `Браузер: ${detected?.name ?? 'не определён'}`,
+      `Версия: ${detected?.match?.[1] ?? 'не определена'}`, '',
+      'Эта страница работает без JavaScript.',
+      'Пришлите эти сведения или скриншот, чтобы проверить причину пустого экрана.', '',
+      `User-Agent: ${agent || 'не передан'}`,
+    ].join('\n'));
+  });
   app.use(cookieParser());
   app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.get('/api/health', async (_req, res) => {

@@ -259,3 +259,25 @@ test('missing JavaScript and CSS assets return an uncached 404 instead of SPA HT
     assert.doesNotMatch(result.text, /<!doctype|<html/i);
   }
 });
+
+
+test('browser diagnostics work without login or JavaScript and distinguish legacy Edge from Chromium', async () => {
+  const app = createApp(config);
+  const agents = [
+    ['Mozilla/5.0 Chrome/42.0 Safari/537.36 Edge/18.19041', 'Microsoft Edge (старая версия)', '18.19041'],
+    ['Mozilla/5.0 Chrome/130.0 Safari/537.36 Edg/130.0.2849.46', 'Microsoft Edge', '130.0.2849.46'],
+    ['Mozilla/5.0 Chrome/124.0 Safari/537.36 YaBrowser/24.6.0.0', 'Яндекс Браузер', '24.6.0.0'],
+    ['Mozilla/5.0 Chrome/109.0.0.0 Safari/537.36', 'Chrome', '109.0.0.0'],
+  ];
+  for (const [agent, name, version] of agents) {
+    const result = await request(app).get('/diagnostics').set('User-Agent', agent).expect(200);
+    assert.match(result.headers['content-type'], /^text\/plain/);
+    assert.equal(result.headers['cache-control'], 'no-store');
+    assert.ok(result.text.includes(`Браузер: ${name}\n`));
+    assert.ok(result.text.includes(`Версия: ${version}\n`));
+    assert.ok(result.text.includes(`User-Agent: ${agent}`));
+  }
+  const unknown = await request(app).get('/diagnostics').set('User-Agent', '<script>untrusted</script>').expect(200);
+  assert.match(unknown.headers['content-type'], /^text\/plain/);
+  assert.ok(unknown.text.includes('Браузер: не определён'));
+});
