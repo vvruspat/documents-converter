@@ -6,8 +6,9 @@ import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import path from 'node:path';
 import { exportSchema } from '../shared/document.js';
+import { IMAGE_MIMES, MAX_FILE_BYTES, MAX_PDF_PAGES, isPdfUpload } from '../shared/upload.js';
 import { createSession, passwordMatches, validSession } from './auth.js';
-import { normalizeImage, recognizeImage, UserError } from './recognize.js';
+import { normalizeImage, recognizeImage, recognizePdf, UserError } from './recognize.js';
 import { exportExcel } from './excel.js';
 import { ConversionStore, safeFilename } from './history.js';
 
@@ -69,22 +70,24 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   });
   app.post('/api/logout', (_req, res) => { res.clearCookie('dc_session', { path: '/', httpOnly: true, secure: config.production, sameSite: 'strict' }); res.json({ ok: true }); });
   app.use('/api', (req, res, next) => { if (!authenticated(req)) { res.status(401).json({ error: 'Войдите в сервис, чтобы продолжить.' }); return; } next(); });
-  app.get('/api/config', (_req, res) => { res.json({ configured: Boolean(config.apiKey), model: config.model, maxFileBytes: 12 * 1024 * 1024 }); });
-  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 12 * 1024 * 1024, files: 1, fields: 0, parts: 1 } });
+  app.get('/api/config', (_req, res) => { res.json({ configured: Boolean(config.apiKey), model: config.model, maxFileBytes: MAX_FILE_BYTES, maxPdfPages: MAX_PDF_PAGES, supportedMimeTypes: [...IMAGE_MIMES, 'application/pdf'] }); });
+  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_BYTES, files: 1, fields: 0, parts: 1 } });
   app.post('/api/recognize', rateLimit({ windowMs: 10 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Достигнут лимит: 20 распознаваний за 10 минут. Подождите немного.' } }), (req, _res, next) => {
     if (!config.apiKey) { next(new UserError('Добавьте OPENROUTER_API_KEY в настройках приложения Coolify.', 503)); return; } next();
   }, upload.single('image'), async (req, res) => {
-    if (!req.file) throw new UserError('Выберите фотографию таблицы.');
-    if (!['image/jpeg', 'image/png', 'image/webp'].includes(req.file.mimetype)) throw new UserError('Поддерживаются только JPG, PNG и WebP.');
+    if (!req.file) throw new UserError('Выберите фото или PDF с таблицей.');
+    const pdf = isPdfUpload(req.file.mimetype, req.file.originalname);
+    if (!pdf && !IMAGE_MIMES.includes(req.file.mimetype)) throw new UserError('Поддерживаются PDF, JPG, PNG и WebP.');
     if (activeRecognitions >= 2) throw new UserError('Сервер уже обрабатывает два документа. Повторите чуть позже.', 429);
     activeRecognitions++;
     try {
-      const image = await normalizeImage(req.file.buffer);
-      const document = await recognizeImage(image, config.apiKey, config.model, fetcher);
-      if (!document.tables.length) throw new UserError(document.warnings[0] || 'На фотографии не найдено таблиц.', 422);
+      const document = pdf
+        ? await recognizePdf(req.file.buffer, safeFilename(req.file.originalname), config.apiKey, config.model, fetcher)
+        : await recognizeImage(await normalizeImage(req.file.buffer), config.apiKey, config.model, fetcher);
+      if (!document.tables.length) throw new UserError(document.warnings[0] || 'В документе не найдено таблиц.', 422);
       const input = exportSchema.parse({ documents: [{ name: safeFilename(req.file.originalname), document }] });
       const result = await exportExcel(input);
-      const record = await history.save(req.file.buffer, result, req.file.originalname, req.file.mimetype,
+      const record = await history.save(req.file.buffer, result, req.file.originalname, pdf ? 'application/pdf' : req.file.mimetype,
         document.tables.reduce((n, table) => n + table.rows.length, 0), document.warnings.length + document.tables.reduce((n, table) => n + table.uncertainCells.length, 0));
       res.json({ document, conversion: record });
     } finally { activeRecognitions--; }
@@ -119,7 +122,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   app.use(express.static(client, { maxAge: 0, index: false, setHeaders: res => { res.set('Cache-Control', 'no-cache'); } }));
   app.get('/{*splat}', (_req, res) => { res.set('Cache-Control', 'no-cache').sendFile(path.join(client, 'index.html')); });
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    if (error instanceof multer.MulterError) { res.status(400).json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'Фото слишком большое. Максимальный размер — 12 МБ.' : 'Загрузите одно изображение без дополнительных полей.' }); return; }
+    if (error instanceof multer.MulterError) { res.status(400).json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'Файл слишком большой. Максимальный размер — 12 МБ.' : 'Загрузите один файл без дополнительных полей.' }); return; }
     if (error instanceof UserError) { res.status(error.status).json({ error: error.message }); return; }
     if (error instanceof SyntaxError || (error instanceof Error && 'status' in error && error.status === 413)) { res.status(400).json({ error: 'Некорректный или слишком большой запрос.' }); return; }
     // Never log request bodies, model responses, images, credentials or upstream errors.

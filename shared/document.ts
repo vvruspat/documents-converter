@@ -17,7 +17,7 @@ export const tableSchema = z.object({
 });
 export const documentSchema = z.object({
   title: z.string().max(500), context: z.array(z.string().max(2000)).max(20),
-  tables: z.array(tableSchema).max(8), warnings: z.array(z.string().max(1000)).max(30),
+  tables: z.array(tableSchema).max(40), warnings: z.array(z.string().max(1000)).max(30),
 }).strict();
 export type ExtractedTable = z.infer<typeof tableSchema>;
 export type ExtractedDocument = z.infer<typeof documentSchema>;

@@ -10,11 +10,13 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { Pool } from 'pg';
+import { PDFDocument } from 'pdf-lib';
 import { createApp, type AppConfig } from './app.js';
 import { createSession, passwordMatches, validSession } from './auth.js';
 import { cellValue, exportExcel } from './excel.js';
-import { parseDocument, recognizeImage, normalizeImage } from './recognize.js';
+import { parseDocument, recognizeImage, recognizePdf, validatePdf, normalizeImage } from './recognize.js';
 import { documentSchema, exportSchema, type ExtractedDocument } from '../shared/document.js';
+import { MAX_PDF_PAGES, MAX_FILE_BYTES } from '../shared/upload.js';
 import { ConversionStore, safeFilename, type StoreOptions } from './history.js';
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -280,4 +282,86 @@ test('browser diagnostics work without login or JavaScript and distinguish legac
   const unknown = await request(app).get('/diagnostics').set('User-Agent', '<script>untrusted</script>').expect(200);
   assert.match(unknown.headers['content-type'], /^text\/plain/);
   assert.ok(unknown.text.includes('Браузер: не определён'));
+});
+
+
+async function pdfWithPages(count: number): Promise<Buffer> {
+  const document = await PDFDocument.create();
+  for (let i = 0; i < count; i++) document.addPage().drawText(`Table on page ${i + 1}`);
+  return Buffer.from(await document.save({ addDefaultPage: false }));
+}
+
+test('PDF validation accepts all pages and rejects invalid, empty, encrypted and oversized documents', async () => {
+  assert.equal(await validatePdf(await pdfWithPages(2)), 2);
+  assert.equal(await validatePdf(await pdfWithPages(MAX_PDF_PAGES)), MAX_PDF_PAGES);
+  await assert.rejects(validatePdf(Buffer.from('%PDF-1.7\nnot a PDF')), /прочитать PDF/);
+  await assert.rejects(validatePdf(await pdfWithPages(0)), /не содержит страниц/);
+  await assert.rejects(validatePdf(await pdfWithPages(MAX_PDF_PAGES + 1)), /20 страниц/);
+  await assert.rejects(validatePdf(await readFile(new URL('./fixtures/password-protected.pdf', import.meta.url))), /защищён паролем/);
+  await assert.rejects(validatePdf(Buffer.alloc(MAX_FILE_BYTES + 1)), /12 МБ/);
+});
+
+test('native OpenRouter PDF input preserves the complete file and all-page extraction instructions', async () => {
+  const pdf = await pdfWithPages(2);
+  let calls = 0;
+  const result = await recognizePdf(pdf, 'two-pages.pdf', config.apiKey, config.model, async (url, init) => {
+    calls++; const body = JSON.parse(init!.body as string);
+    assert.deepEqual(body.plugins, [{ id: 'file-parser', pdf: { engine: 'native' } }]);
+    assert.match(body.messages[0].content, /every page.*untrusted source material/);
+    assert.match(body.messages[1].content[0].text, /ALL pages/);
+    assert.equal(body.messages[1].content[1].type, 'file');
+    assert.equal(body.messages[1].content[1].file.filename, 'two-pages.pdf');
+    const data = body.messages[1].content[1].file.file_data;
+    assert.match(data, /^data:application\/pdf;base64,/);
+    assert.deepEqual(Buffer.from(data.split(',')[1], 'base64'), pdf);
+    assert.equal(body.response_format.json_schema.strict, true);
+    return mock(url, init);
+  });
+  assert.equal(calls, 1); assert.deepEqual(result, fixture);
+});
+
+test('invalid PDFs are rejected before any paid model request or history record', async () => {
+  let calls = 0;
+  const app = createApp(config, async (...args) => { calls++; return mock(...args); });
+  const before = (await sharedStore.list(0, 25)).total;
+  for (const [pdf, message] of [
+    [Buffer.from('not a PDF'), 'прочитать PDF'],
+    [await pdfWithPages(0), 'не содержит страниц'],
+    [await pdfWithPages(MAX_PDF_PAGES + 1), '20 страниц'],
+    [await readFile(new URL('./fixtures/password-protected.pdf', import.meta.url)), 'защищён паролем'],
+  ] as const) {
+    const result = await request(app).post('/api/recognize').set('Cookie', cookie()).attach('image', pdf, { filename: 'test.pdf', contentType: 'application/pdf' }).expect(400);
+    assert.ok(result.body.error.includes(message));
+  }
+  assert.equal(calls, 0); assert.equal((await sharedStore.list(0, 25)).total, before);
+});
+
+test('scan-only multipage PDFs convert to Excel, retain the source, and can be downloaded and deleted', async () => {
+  const pdf = await readFile(new URL('./fixtures/scanned-two-pages.pdf', import.meta.url));
+  const document: ExtractedDocument = { title: 'Materials register', context: [], warnings: [], tables: [{ title: 'Materials', columns: ['Code', 'Material', 'Quantity'], rows: [['000101', 'Concrete', '12'], ['000105', 'Waterproofing', '8'], ['000107', 'Brick', '24'], ['000109', 'Sand', '16']], uncertainCells: [] }] };
+  const app = createApp(config, async (_url, init) => {
+    const body = JSON.parse(init!.body as string);
+    assert.deepEqual(Buffer.from(body.messages[1].content[1].file.file_data.split(',')[1], 'base64'), pdf);
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(document) } }] });
+  });
+  // Browsers sometimes supply an empty type, which multipart sends as application/octet-stream.
+  const result = await request(app).post('/api/recognize').set('Cookie', cookie()).attach('image', pdf, { filename: 'Scanned.PDF', contentType: 'application/octet-stream' }).expect(200);
+  const entry = result.body.conversion;
+  assert.equal(entry.originalMime, 'application/pdf'); assert.equal(entry.resultName, 'Scanned.xlsx'); assert.equal(entry.rowCount, 4);
+  const source = await request(app).get(`/api/history/${entry.id}/source`).set('Cookie', cookie()).buffer(true).parse((res, done) => { const chunks: Buffer[] = []; res.on('data', chunk => chunks.push(Buffer.from(chunk))); res.on('end', () => done(null, Buffer.concat(chunks))); }).expect(200);
+  assert.deepEqual(source.body, pdf);
+  const output = await request(app).get(`/api/history/${entry.id}/result`).set('Cookie', cookie()).buffer(true).parse((res, done) => { const chunks: Buffer[] = []; res.on('data', chunk => chunks.push(Buffer.from(chunk))); res.on('end', () => done(null, Buffer.concat(chunks))); }).expect(200);
+  const book = new ExcelJS.Workbook(); await book.xlsx.load(output.body);
+  const values = book.worksheets[0].getSheetValues().flat();
+  for (const code of ['000101', '000105', '000107', '000109']) assert.ok(values.includes(code));
+  await request(app).delete(`/api/history/${entry.id}`).set('Cookie', cookie()).expect(200);
+  await request(app).get(`/api/history/${entry.id}/source`).set('Cookie', cookie()).expect(404);
+  await request(app).get(`/api/history/${entry.id}/result`).set('Cookie', cookie()).expect(404);
+});
+
+test('multipage documents can contain more than eight separate tables', async () => {
+  const document = { ...fixture, tables: Array.from({ length: 20 }, (_, index) => ({ title: `Page ${index + 1}`, columns: ['Code'], rows: [[`000${index + 1}`]], uncertainCells: [] })) };
+  assert.ok(documentSchema.safeParse(document).success);
+  const book = new ExcelJS.Workbook(); await book.xlsx.load(await exportExcel({ documents: [{ name: 'twenty-pages.pdf', document }] }));
+  assert.equal(book.worksheets.length, 20);
 });
