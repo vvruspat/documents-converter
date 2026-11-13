@@ -6,6 +6,7 @@ type RegistryJob = {
   status: 'queued' | 'working' | 'done' | 'error';
   pages: number; processedPages: number; recordCount: number; createdAt: string; error?: string;
 };
+const dateTime = new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 async function api(url: string, init?: RequestInit) {
   const response = await fetch(url, init);
@@ -71,10 +72,10 @@ export function RegistryPage() {
     if (!uploading) select(event.dataTransfer.files);
   }
 
-  async function change(job: RegistryJob, kind: 'retry' | 'delete') {
+  async function change(job: RegistryJob, kind: 'retry' | 'reprocess' | 'delete') {
     setAction(job.id); setError('');
     try {
-      await api(`/api/registry/${job.id}${kind === 'retry' ? '/retry' : ''}`, { method: kind === 'retry' ? 'POST' : 'DELETE' });
+      await api(`/api/registry/${job.id}${kind === 'retry' ? '/retry' : kind === 'reprocess' ? '/reprocess' : ''}`, { method: kind === 'delete' ? 'DELETE' : 'POST' });
       await refresh();
     } catch (reason) { setError((reason as Error).message); }
     finally { setAction(''); }
@@ -90,18 +91,19 @@ export function RegistryPage() {
       <button className="button" disabled={uploading} onClick={() => input.current?.click()}>{uploading ? 'Загружается…' : 'Выбрать PDF'}</button>
       <p>{uploading ? `Загрузка${uploadPercent === null ? '…' : `: ${uploadPercent}%`}` : 'Размер файла и число страниц не ограничены приложением'}</p>
     </div>
-    <p className="registry-note">Обработка большого PDF может занять время. Можно закрыть страницу и вернуться позже. Подсвеченные ячейки в Excel требуют проверки по оригиналу.</p>
+    <p className="registry-note">Обработка большого PDF может занять время. Можно закрыть страницу и вернуться позже. Подсвеченные ячейки в Excel требуют проверки по оригиналу. Пересоздание повторно распознаёт все страницы.</p>
     <div className="registry-list"><div className="list-heading"><span>Реестры <span className="muted">{jobs.length}</span></span></div>
       {jobs.length === 0 ? <p className="empty-history">Здесь появятся ваши PDF и готовые реестры.</p> : jobs.map(job => <div className="job registry-job" key={job.id}>
         <FileText className="file-icon" size={22} strokeWidth={1.5} />
         <div className="job-body"><div className="job-name" title={job.originalName}>{job.originalName}</div>
           <div className={`job-status ${job.status === 'error' ? 'error-text' : ''}`} aria-live="polite">
-            {job.status === 'queued' ? 'В очереди' : job.status === 'working' ? `Обработано ${job.processedPages} из ${job.pages} стр.` : job.status === 'done' ? <><Check size={12} /> {job.recordCount} документов · {job.resultName}</> : job.error}
+            {job.status === 'queued' ? 'В очереди' : job.status === 'working' ? `Обработано ${job.processedPages} из ${job.pages} стр.` : job.status === 'done' ? <><Check size={12} /> {job.recordCount} документов · {dateTime.format(new Date(job.createdAt))} · {job.resultName}</> : job.error}
           </div>
           <progress className="registry-progress" max={job.pages || 1} value={job.status === 'done' ? job.pages : job.processedPages} aria-label={`Обработка ${job.originalName}`} />
         </div>
         <div className="job-action">
           {job.status === 'done' && <a className="button compact" href={`/api/registry/${job.id}/result`} download={job.resultName}><Download size={15} />Скачать</a>}
+          {job.status === 'done' && <button className="icon-button" title="Пересоздать реестр" aria-label={`Пересоздать ${job.originalName}`} disabled={action === job.id} onClick={() => void change(job, 'reprocess')}>{action === job.id ? <LoaderCircle className="spin" size={16} /> : <RotateCcw size={17} />}</button>}
           {job.status === 'error' && <button className="icon-button" title="Повторить" aria-label={`Повторить ${job.originalName}`} disabled={action === job.id} onClick={() => void change(job, 'retry')}>{action === job.id ? <LoaderCircle className="spin" size={16} /> : <RotateCcw size={17} />}</button>}
           {job.status !== 'working' && <button className="icon-button delete" title="Удалить" aria-label={`Удалить ${job.originalName}`} disabled={action === job.id} onClick={() => void change(job, 'delete')}><Trash2 size={16} /></button>}
         </div>
