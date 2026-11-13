@@ -5,20 +5,25 @@ import cookieParser from 'cookie-parser';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import { exportSchema } from '../shared/document.js';
 import { IMAGE_MIMES, MAX_FILE_BYTES, MAX_PDF_PAGES, isPdfUpload } from '../shared/upload.js';
 import { createSession, passwordMatches, validSession } from './auth.js';
 import { normalizeImage, recognizeImage, recognizePdf, UserError } from './recognize.js';
 import { exportExcel } from './excel.js';
 import { ConversionStore, safeFilename } from './history.js';
+import { RegistryQueue } from './registry.js';
 
-export type AppConfig = { apiKey: string; model: string; password: string; sessionSecret: string; production: boolean; trustProxy?: number; commit?: string; dataDir?: string; databaseUrl?: string; historyStore?: ConversionStore };
+export type AppConfig = { apiKey: string; model: string; password: string; sessionSecret: string; production: boolean; trustProxy?: number; commit?: string; dataDir?: string; databaseUrl?: string; historyStore?: ConversionStore; registryQueue?: RegistryQueue };
 
 export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   const app = express();
   if (config.production && (config.password.length < 6 || config.sessionSecret.length < 32)) throw new Error('Production requires APP_PASSWORD (at least 6 characters) and SESSION_SECRET (at least 32 characters).');
   const history = config.historyStore ?? new ConversionStore({ directory: config.dataDir ?? path.resolve('.local/data'), connectionString: config.databaseUrl ?? '' });
   app.locals.conversionStore = history;
+  const registry = config.registryQueue ?? new RegistryQueue({ directory: config.dataDir ?? path.resolve('.local/data'), apiKey: config.apiKey, model: config.model, fetcher });
+  app.locals.registryQueue = registry;
   let activeRecognitions = 0;
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy ?? 1);
@@ -72,6 +77,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   app.use('/api', (req, res, next) => { if (!authenticated(req)) { res.status(401).json({ error: 'Войдите в сервис, чтобы продолжить.' }); return; } next(); });
   app.get('/api/config', (_req, res) => { res.json({ configured: Boolean(config.apiKey), model: config.model, maxFileBytes: MAX_FILE_BYTES, maxPdfPages: MAX_PDF_PAGES, supportedMimeTypes: [...IMAGE_MIMES, 'application/pdf'] }); });
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_BYTES, files: 1, fields: 0, parts: 1 } });
+  const registryUpload = multer({ storage: multer.diskStorage({ destination: registry.uploadDirectory, filename: (_req, _file, callback) => callback(null, `${randomUUID()}.upload`) }), limits: { files: 1, fields: 0, parts: 1 } });
   app.post('/api/recognize', rateLimit({ windowMs: 10 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Достигнут лимит: 20 распознаваний за 10 минут. Подождите немного.' } }), (req, _res, next) => {
     if (!config.apiKey) { next(new UserError('Добавьте OPENROUTER_API_KEY в настройках приложения Coolify.', 503)); return; } next();
   }, upload.single('image'), async (req, res) => {
@@ -91,6 +97,33 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
         document.tables.reduce((n, table) => n + table.rows.length, 0), document.warnings.length + document.tables.reduce((n, table) => n + table.uncertainCells.length, 0));
       res.json({ document, conversion: record });
     } finally { activeRecognitions--; }
+  });
+  app.get('/api/registry', async (_req, res) => { await registry.ready; res.json({ items: registry.list() }); });
+  app.post('/api/registry', rateLimit({ windowMs: 10 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Слишком много загрузок. Повторите через 10 минут.' } }), registryUpload.single('pdf'), async (req, res) => {
+    if (!req.file) throw new UserError('Выберите PDF с документами.');
+    try {
+      if (!isPdfUpload(req.file.mimetype, req.file.originalname)) throw new UserError('Для реестра нужен PDF.');
+      const job = await registry.create(req.file.path, req.file.originalname);
+      res.status(202).json({ job });
+    } finally { await rm(req.file.path, { force: true }); }
+  });
+  app.get('/api/registry/:id', async (req, res) => {
+    await registry.ready;
+    const job = registry.get(String(req.params.id));
+    if (!job) throw new UserError('Реестр не найден.', 404);
+    res.json({ job });
+  });
+  app.get('/api/registry/:id/result', async (req, res, next) => {
+    await registry.ready;
+    const job = registry.get(String(req.params.id));
+    if (!job) throw new UserError('Реестр не найден.', 404);
+    if (job.status !== 'done') throw new UserError('Реестр ещё не готов.', 409);
+    res.download(registry.resultPath(job.id), job.resultName, error => { if (error && !res.headersSent) next(new UserError('Файл не найден.', 404)); });
+  });
+  app.post('/api/registry/:id/retry', async (req, res) => { res.json({ job: await registry.retry(String(req.params.id)) }); });
+  app.delete('/api/registry/:id', async (req, res) => {
+    if (!await registry.delete(String(req.params.id))) throw new UserError('Реестр не найден.', 404);
+    res.json({ ok: true });
   });
   app.get('/api/history', async (req, res) => {
     const input = z.object({ offset: z.coerce.number().int().min(0).max(1_000_000).default(0), limit: z.coerce.number().int().min(1).max(50).default(25) }).safeParse(req.query);

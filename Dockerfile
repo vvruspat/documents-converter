@@ -8,7 +8,7 @@ RUN npm run build && npm prune --omit=dev --no-audit --no-fund
 FROM node:24-alpine AS runtime
 ENV NODE_ENV=production PORT=3001 DATA_DIR=/app/data
 WORKDIR /app
-RUN apk add --no-cache curl
+RUN apk add --no-cache curl poppler-utils
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/package.json ./package.json
