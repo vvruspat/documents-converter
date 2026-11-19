@@ -444,7 +444,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   const settings = await options(), store = await openStore(settings);
   const models = { recognition: 'test/reader', regions: 'test/detail', chat: 'test/archive' };
   const order: string[] = [];
-  let failSecond = true;
+  let failSecond = true, failCrop = true;
   let jobId = '';
   const answer = (result: unknown) => Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }] });
   const fetcher: typeof fetch = async (_url, init) => {
@@ -459,7 +459,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
         regions: page1 ? [{document:0,kind:'handwriting',left:100,top:100,right:300,bottom:250}] : [],
       });
     }
-    if (body.model === models.regions) return answer({text:'Act No. 000017',status:'read'});
+    if (body.model === models.regions) return failCrop ? new Response('', {status:503}) : answer({text:'Act No. 000017',status:'read'});
     assert.equal(body.model, models.chat);
     const saved = await store.transcripts(jobId);
     assert.equal(saved.length, 2);
@@ -494,6 +494,10 @@ test('archives complete owned transcriptions before chat extraction and resumes 
     } while (Date.now()<end);
     assert.fail('Timed out waiting for '+status);
   }
+  assert.match((await wait('error')).error, /фрагмент страницы 1/);
+  assert.equal((await store.transcripts(jobId))[0].readings,null);
+  failCrop = false;
+  await request(app).post('/api/registry/'+jobId+'/retry').expect(200);
   assert.equal((await wait('error')).recordCount,1);
   const failedCalls = [...order];
   app = makeApp();
@@ -501,7 +505,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   await request(app).post('/api/registry/'+jobId+'/retry').expect(200);
   assert.equal((await wait('done')).recordCount,2);
   assert.deepEqual(order, [...failedCalls,models.chat]);
-  assert.deepEqual(failedCalls,[models.recognition,models.regions,models.recognition,models.chat,models.chat]);
+  assert.deepEqual(failedCalls,[models.recognition,models.regions,models.regions,models.recognition,models.chat,models.chat]);
   const entries = await store.documentFields(jobId);
   assert.deepEqual([...entries.values()].map(e=>[e.row.number,e.row.first,e.row.last]),[['000017',1,2],['C-15',2,2]]);
   const catalog = (await request(app).get('/api/catalog').query({project:'Archive'})).body;
@@ -511,7 +515,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   const book = new ExcelJS.Workbook(); await book.xlsx.readFile(xlsx);
   assert.equal(book.worksheets[0].getCell('C8').value, '000017');
   assert.equal(book.worksheets[0].getCell('C9').value, 'C-15');
-  assert.equal(order.length,6);
+  assert.equal(order.length,7);
   await request(app).delete('/api/registry/'+jobId).expect(200);
   assert.equal((await store.transcripts(jobId)).length,0);
   assert.equal((await store.documentFields(jobId)).size,0);

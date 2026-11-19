@@ -468,7 +468,10 @@ export class RegistryQueue {
       if (data.readings === null) {
         const readings: NonNullable<StoredPage['readings']> = [];
         for (const box of data.transcript.regions) {
-          const reading = await recognizeRegion(dir, page, box.document, box, 'auto', { ...reader, model: models.regions });
+          const reading = await recognizeRegion(dir, page, box.document, box, 'auto', { ...reader, model: models.regions }, true);
+          if (reading.status === 'error') {
+            throw new UserError('Не удалось обработать фрагмент страницы ' + page + '. Повторите обработку, чтобы заполнить реестр.', 502);
+          }
           if (!readings.some(r => r.document === box.document && r.id === reading.id)) readings.push({ ...reading, document: box.document });
         }
         await db.saveReadings(job.id, page, readings);
