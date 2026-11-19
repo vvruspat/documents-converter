@@ -244,7 +244,8 @@ test('reads individual cropped regions, isolates documents sharing a page and re
   const stamp = {...seal,kind:'stamp',top:460,bottom:520};
   const detected = [{...seal,document:0},{...secondSeal,document:0},{...stamp,document:1}];
   let pageCalls = 0, cropCalls = 0, failStamp = true;
-  const dimensions: number[][] = [];
+  const firstPair = Promise.withResolvers<void>();
+  let activeReads = 0, peakReads = 0;
   const inputs: string[] = [];
   const initial = {recognition:'test/pages',chat:'test/chat',regions:'test/crop'};
   const alternate = {recognition:'test/pages-next',chat:'test/chat-next',regions:'test/crop-next:free'};
@@ -261,13 +262,17 @@ test('reads individual cropped regions, isolates documents sharing a page and re
     } else {
       cropCalls++;
       assert.equal(body.model,cropCalls <= 5 ? initial.regions : alternate.regions);
+      activeReads++;
+      peakReads = Math.max(peakReads, activeReads);
+      if (activeReads === 2) firstPair.resolve();
+      await firstPair.promise;
       const content = body.messages[1].content;
       assert.equal(content.length,1);
       inputs.push(content[0].image_url.url);
       const bytes = Buffer.from(content[0].image_url.url.split(',')[1],'base64');
       const meta = await sharp(bytes).metadata();
       assert.equal(meta.format,'png');
-      dimensions.push([meta.width,meta.height]);
+      activeReads--;
       if (failStamp && body.messages[0].content.includes('stamp imprint')) return new Response('',{status:503});
       data = {status:'partial',text:'ООО [неразборчиво]'};
     }
@@ -282,6 +287,7 @@ test('reads individual cropped regions, isolates documents sharing a page and re
     assert.equal(queue.get(job.id)?.status,'done',queue.get(job.id)?.error);
     assert.equal(pageCalls,2);
     assert.equal(cropCalls,3);
+    assert.equal(peakReads,2);
     const app = createApp({historyStore:{catalogFiles:async()=>[],indexFile:async()=>{},indexPageText:async()=>{}} as unknown as ConversionStore,registryQueue:queue,model:'page-model',regionModel:'crop-model',apiKey:'test',production:false,password:'',sessionSecret:''},fetcher);
     const base='/api/registry/'+job.id+'/documents/';
     const {body:layout}=await supertest(app).get(base+'0/layout?page=1').expect(200);
@@ -289,8 +295,9 @@ test('reads individual cropped regions, isolates documents sharing a page and re
     assert.notEqual(layout.regions[0].id,layout.regions[1].id);
     assert.equal(layout.regions[0].text,'ООО [неразборчиво]');
     const png = await supertest(app).get(base+'0/image?page=1&region='+layout.regions[0].id).expect(200);
-    assert.equal((await sharp(png.body).metadata()).width, dimensions[0][0]);
-    assert.deepEqual(dimensions[0],[Math.ceil(layout.width*2*.3)-Math.floor(layout.width*2*.1),Math.ceil(layout.height*2*.45)-Math.floor(layout.height*2*.3)]);
+    const meta = await sharp(png.body).metadata();
+    assert.ok(inputs.includes('data:image/png;base64,' + png.body.toString('base64')));
+    assert.deepEqual([meta.width,meta.height],[Math.ceil(layout.width*2*.3)-Math.floor(layout.width*2*.1),Math.ceil(layout.height*2*.45)-Math.floor(layout.height*2*.3)]);
     assert.equal((await supertest(app).get(base+'1/layout?page=1')).body.regions[0].status,'error');
     await supertest(app).post(base+'0/regions?page=2').send(seal).expect(404);
     await supertest(app).post(base+'0/regions?page=1').send({...seal,right:50}).expect(400);
