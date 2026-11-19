@@ -8,6 +8,7 @@ import sharp from 'sharp';
 import { z } from 'zod';
 import { regionKinds, type Region, type RegionReading, type RegionBox } from '../shared/regions.js';
 import { UserError } from './recognize.js';
+import { unreadableText } from '../shared/catalog.js';
 import { scanPage } from './scan.js';
 
 const coordinate = z.number().int().min(0).max(1000);
@@ -19,19 +20,12 @@ const boxShape = {
   bottom: coordinate,
 };
 export const regionBox = z.object(boxShape).refine((box) => box.right > box.left && box.bottom > box.top);
-export const detectedRegion = z.object({ ...boxShape, document: z.number().int().min(-1) });
-export const detectionFormat = {
-  type: 'array',
-  items: {
-    type: 'object',
-    additionalProperties: false,
-    required: ['document', 'kind', 'left', 'top', 'right', 'bottom'],
-    properties: {
-      kind: { type: 'string', enum: regionKinds },
-      ...Object.fromEntries(['document', 'left', 'top', 'right', 'bottom'].map((k) => [k, { type: 'integer' }])),
-    },
-  },
-};
+const firstReading = z.object({ text: z.string().max(12000), confidence: z.enum(['high', 'medium', 'low']) });
+export const modelRegion = z.object({ ...boxShape, document: z.number().int().min(-1), reading: firstReading });
+export const detectedRegion = modelRegion.extend({ reading: firstReading.optional().catch(undefined) });
+export const regionDetectionPrompt = `Inspect the full page for every organization seal, text stamp and handwritten entry, including faint or overlapping marks. Exclude signature flourishes alone. For each region separately transcribe exactly its visible text into reading.text, in line order, including the rim of seals, numbers and dates. Never infer letters or digits from nearby printed text. Use [неразборчиво] for missing characters. Use high confidence ONLY if the entire imprint or entry is legible, every character and digit is unambiguous and no part is obscured or cut off; medium if some text is legible but any part is uncertain; low if little or nothing can be read. Still report the box when the reading is empty.`;
+export const detectionFormat = z.toJSONSchema(z.array(modelRegion), { target: 'draft-7' });
+delete detectionFormat.$schema;
 const modules = {
   seal: 'Read the organization seal, including text around the rim and in the centre. Keep visible parts of identifiers. Never complete missing digits or infer authenticity.',
   stamp: 'Read only the stamp imprint in line order. Preserve abbreviations, job titles and certification wording.',
@@ -177,7 +171,7 @@ export async function regionsFor(dir: string, page: number, document: number): P
   return records.sort((a, b) => a.top - b.top || a.left - b.left || a.id.localeCompare(b.id));
 }
 
-const inFlight = new Map<string, {model:string; task:Promise<Region>}>();
+const inFlight = new Map<string, {key:string; task:Promise<Region>}>();
 export async function recognizeRegion(
   dir: string,
   page: number,
@@ -185,28 +179,36 @@ export async function recognizeRegion(
   input: RegionBox,
   source: Region['source'],
   config: Config,
-  retry = false
+  retry = false,
+  pageReading?: Region['pageReading']
 ): Promise<Region> {
   const box = regionBox.parse(input);
   const id = createHash('sha256').update(JSON.stringify(box)).digest('hex').slice(0, 24);
   const root = folder(dir, page, document),
     file = path.join(root, id + '.json');
+  const usePage = pageReading?.confidence === 'high' && /[\p{L}\p{N}]/u.test(pageReading.text) && !unreadableText(pageReading.text) && !/[?…]|\.{3}/u.test(pageReading.text);
+  const method = usePage ? 'page' : 'crop';
+  const model = usePage ? pageReading.model : config.model;
+  const cacheKey = JSON.stringify([method, model]);
   const active = inFlight.get(file);
   if (active) {
-    if (active.model === config.model) return active.task;
+    if (active.key === cacheKey) return active.task;
     await active.task.catch(() => undefined);
-    return recognizeRegion(dir,page,document,box,source,config,retry);
+    return recognizeRegion(dir,page,document,box,source,config,retry,pageReading);
   }
   async function process(): Promise<Region> {
     let originalSource = source;
+    let originalPageReading = pageReading;
     let previous: RegionReading[] = [];
     try {
       const saved: Region = JSON.parse(await readFile(file, 'utf8'));
       if (!retry) return saved;
-      const readings = [{model:saved.model, status:saved.status, text:saved.text}, ...(saved.previous ?? [])];
-      previous = readings.filter(item => item.model !== config.model);
-      const cached = readings.find(item => item.model === config.model);
-      if (cached && cached.status !== 'error') return {...saved, ...cached, previous};
+      originalPageReading ??= saved.pageReading;
+      const readings = [{model:saved.model, method:saved.method ?? 'crop', status:saved.status, text:saved.text}, ...(saved.previous ?? [])];
+      const matches = (item: RegionReading) => item.model === model && (item.method ?? 'crop') === method;
+      previous = readings.filter(item => !matches(item));
+      const cached = readings.find(matches);
+      if (cached && cached.status !== 'error') return {...saved, ...cached, method, previous};
       originalSource = saved.source;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
@@ -229,11 +231,11 @@ export async function recognizeRegion(
           await rename(temp, preview);
         } finally { await rm(temp, { force: true }); }
       }
-      reading = await readCrop(crop, box, config);
+      reading = usePage ? { text: pageReading.text.trim(), status: 'read' } : await readCrop(crop, box, config);
     } catch {
       reading = { status: 'error', text: '' };
     }
-    const record = { ...box, id, source: originalSource, model: config.model, ...reading, previous };
+    const record: Region = { ...box, id, source: originalSource, model, method, pageReading: originalPageReading, ...reading, previous };
     const temporary = file + '.' + randomUUID();
     try {
       await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
@@ -244,13 +246,13 @@ export async function recognizeRegion(
     return record;
   }
   const task = process().finally(() => inFlight.delete(file));
-  inFlight.set(file, {model:config.model, task});
+  inFlight.set(file, {key:cacheKey, task});
   return task;
 }
 
 // Both readers take work from the same page. Keep source order even when the second finishes first.
 export async function readPageRegions(
-  dir: string, page: number, boxes: z.infer<typeof detectedRegion>[], config: Config, retryErrors = false
+  dir: string, page: number, boxes: z.infer<typeof detectedRegion>[], config: Config, pageModel: string, retryErrors = false
 ) {
   const unique = new Map<string, z.infer<typeof detectedRegion>>();
   for (const box of boxes) {
@@ -266,7 +268,8 @@ export async function readPageRegions(
         const next = pending.next();
         if (next.done) break;
         const [index, box] = next.value;
-        const reading = await recognizeRegion(dir, page, box.document, box, 'auto', config, retryErrors);
+        const reading = await recognizeRegion(dir, page, box.document, box, 'auto', config, retryErrors,
+          box.reading && { ...box.reading, model: pageModel });
         if (retryErrors && reading.status === 'error') {
           throw new UserError('Не удалось обработать фрагмент страницы ' + page + '. Повторите обработку, чтобы заполнить реестр.', 502);
         }

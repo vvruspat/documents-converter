@@ -235,9 +235,11 @@ export function ScanRegions({ width, height, image, endpoint, saved, children }:
             {active?.status === 'partial' && <small>Часть текста не удалось прочитать.</small>}
             {active?.status === 'unreadable' && <p>Текст не удалось прочитать.</p>}
             {active?.status === 'error' && <p>Распознавание не завершилось.</p>}
-            {active && <p className="reading-model">Модель · {active.model}</p>}
-            {!!active?.previous?.length && <details><summary>Другие модели ({active.previous.length})</summary>
-              {active.previous.map(r=><div key={r.model}><strong>{r.model}</strong><p>{r.text || (r.status==='error' ? 'Ошибка распознавания' : 'Текст не удалось прочитать')}</p></div>)}
+            {active && <p className="reading-model">{active.method === 'page' ? 'Чтение со страницы' : 'Чтение по фрагменту'} · {active.model}</p>}
+            {active?.method === 'crop' && active.pageReading?.text && active.pageReading.text !== active.text &&
+              <details><summary>Первичное чтение со страницы</summary><p>{active.pageReading.text}</p></details>}
+            {!!active?.previous?.length && <details><summary>Другие результаты ({active.previous.length})</summary>
+              {active.previous.map(r=><div key={JSON.stringify([r.model,r.method])}><strong>{r.model} · {r.method === 'page' ? 'страница' : 'фрагмент'}</strong><p>{r.text || (r.status==='error' ? 'Ошибка распознавания' : 'Текст не удалось прочитать')}</p></div>)}
             </details>}
             <div className="reading-actions"><button disabled={busy} onClick={() => recognize(box)}>
               {busy ? 'Распознаём…' : draft ? 'Распознать фрагмент' : 'Проверить выбранной моделью'}
