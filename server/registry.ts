@@ -11,7 +11,8 @@ import { scanPage, savePageText, saveDocument } from './scan.js';
 import { fieldLabels, type Field } from '../shared/scan.js';
 import { z } from 'zod';
 import { fieldsToReview, unreadableText, kinds, type CatalogRow } from '../shared/catalog.js';
-import { safeFilename } from './history.js';
+import { documentsFromPages, extractDocument, transcribe, sourceText, type StoredPage } from './document-register.js';
+import { safeFilename, type ConversionStore } from './history.js';
 import { UserError } from './recognize.js';
 
 const run = promisify(execFile);
@@ -48,7 +49,7 @@ const pageSchema = z.object({
 }).strict();
 type PageResult = z.infer<typeof pageSchema>;
 export type RegistryJob = {
-  id: string; project?: string; models?: {recognition: string; regions: string}; originalName: string; resultName: string; status: 'queued' | 'working' | 'done' | 'error';
+  id: string; project?: string; pipeline?: 'document'; documentsTotal?: number; models?: {recognition: string; regions: string; chat?: string}; originalName: string; resultName: string; status: 'queued' | 'working' | 'done' | 'error';
   pages: number; processedPages: number; recordCount: number; createdAt: string; error?: string;
 };
 type RegistryRow = { name: string; number: string; date: string; organization: string; first: number; last: number; uncertain: boolean; reviewFields: Field[] };
@@ -196,8 +197,7 @@ export function registryRows(pages: PageResult[]): RegistryRow[] {
   return rows;
 }
 
-async function writeRegistry(filename: string, sourceName: string, pages: PageResult[]): Promise<number> {
-  const rows = registryRows(pages);
+async function writeRegistry(filename: string, sourceName: string, pages: {object?: string; section?: string}[], rows: CatalogRow[] | RegistryRow[]): Promise<number> {
   const object = pages.find(page => page.object?.trim())?.object?.trim();
   const section = pages.find(page => page.section?.trim())?.section?.trim();
   const book = new ExcelJS.stream.xlsx.WorkbookWriter({ filename, useStyles: true });
@@ -255,7 +255,7 @@ async function writeRegistry(filename: string, sourceName: string, pages: PageRe
       cell.alignment = { wrapText: true, vertical: 'middle', horizontal: [2, 5].includes(Number(cell.col)) ? 'left' : 'center' };
       cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
       const field = (['name', 'number', 'date', 'organization'] as const)[Number(cell.col) - 2];
-      if (field && record.reviewFields.includes(field)) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF0C2' } };
+      if (field && record.reviewFields?.includes(field)) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF0C2' } };
     });
     line.commit(); sheetRows++;
   }
@@ -271,7 +271,7 @@ export class RegistryQueue {
   private directory: string;
   private jobs = new Map<string, RegistryJob>();
   private running = false;
-  constructor(private options: { directory: string; apiKey: string; model: string; regionModel?: string; fetcher?: typeof fetch }) {
+  constructor(private options: { directory: string; apiKey: string; model: string; regionModel?: string; store?: ConversionStore; fetcher?: typeof fetch }) {
     this.models = new ModelSettings(options.directory, { recognition: options.model, chat: options.model, regions: options.regionModel || options.model });
     this.directory = path.join(path.resolve(options.directory), 'registry-jobs');
     this.uploadDirectory = path.join(this.directory, 'uploads');
@@ -305,6 +305,7 @@ export class RegistryQueue {
     return path.join(this.jobDir(id), 'source.pdf');
   }
   async pageTexts(job: RegistryJob) {
+    if (job.pipeline === 'document') return (await this.options.store!.transcripts(job.id)).map(sourceText);
     const texts: string[] = [];
     for (let page = 1; page <= job.pages; page++) {
       try { texts.push(await readFile(path.join(this.jobDir(job.id), 'pages', page + '.txt'), 'utf8')); }
@@ -312,12 +313,25 @@ export class RegistryQueue {
     }
     return texts;
   }
-  async evidence(id: string, page: number, document: number) {
+  async evidence(id: string, page: number, document: number, index: number) {
+    if (this.get(id)?.pipeline === 'document') return (await this.options.store!.documentFields(id)).get(index)?.evidence.filter(e => e.page === page) ?? [];
     const result = pageSchema.parse(JSON.parse(await readFile(path.join(this.jobDir(id),'pages',page + '.json'),'utf8')));
     return (result.evidence ?? []).filter(e => e.document === document);
   }
-  async excerpt(id: string, first: number, last: number) {
-    if (!this.get(id)) return '';
+  async excerpt(id: string, first: number, last: number, index: number) {
+    const job = this.get(id);
+    if (!job) return '';
+    if (job.pipeline === 'document') {
+      const pages = await this.options.store!.transcripts(id, [first, last]);
+      const rows = await this.catalogRows(job);
+      const firstOrdinal = index - rows.findIndex(r => r.first === first);
+      return pages.map(p => {
+        const ordinal = p.page === first ? firstOrdinal : -1;
+        const text = ordinal === -1 ? p.transcript.continuation : p.transcript.documents[ordinal]?.text;
+        const regions = p.readings?.filter(r => r.document === ordinal) ?? [];
+        return [text, ...regions.map(r => r.text)].filter(Boolean).join('\n').slice(0, 3000);
+      }).join('\n');
+    }
     const texts = [];
     for (const page of new Set([first, last])) {
       try { texts.push((await readFile(path.join(this.jobDir(id), 'pages', page + '.txt'), 'utf8')).slice(0, 3000)); }
@@ -342,7 +356,13 @@ export class RegistryQueue {
     const build = async () => {
       const temporary = target + '.' + randomUUID() + '.tmp';
       try {
-        await writeRegistry(temporary, job.originalName, await this.savedPages(job));
+        if (job.pipeline === 'document') {
+          const pages = await this.options.store!.transcripts(job.id);
+          await writeRegistry(temporary, job.originalName, pages.map(p => p.transcript), await this.catalogRows(job));
+        } else {
+          const pages = await this.savedPages(job);
+          await writeRegistry(temporary, job.originalName, pages, registryRows(pages));
+        }
         await rename(temporary, target);
         return target;
       } finally {
@@ -355,6 +375,7 @@ export class RegistryQueue {
     return task;
   }
   async catalogRows(job: RegistryJob): Promise<CatalogRow[]> {
+    if (job.pipeline === 'document') return [...(await this.options.store!.documentFields(job.id)).values()].map(f => f.row);
     const pages = await this.savedPages(job);
     const offsets = new Map<number, number>();
     return registryRows(pages).map(row => {
@@ -370,8 +391,8 @@ export class RegistryQueue {
     if (!this.options.apiKey) throw new UserError('Добавьте OPENROUTER_API_KEY в настройках приложения Coolify.', 503);
     const pages = await pdfPages(uploadPath);
     const id = randomUUID(), name = safeFilename(originalName);
-    const { recognition, regions } = await this.models.get();
-    const job: RegistryJob = { id, project, models: { recognition, regions }, originalName: name, resultName: `${name.replace(/\.pdf$/i, '') || 'Документ'} — реестр.xlsx`,
+    const models = await this.models.get();
+    const job: RegistryJob = { id, project, models, pipeline: this.options.store ? 'document' : undefined, originalName: name, resultName: `${name.replace(/\.pdf$/i, '') || 'Документ'} — реестр.xlsx`,
       status: 'queued', pages, processedPages: 0, recordCount: 0, createdAt: new Date().toISOString() };
     const dir = this.jobDir(id);
     await mkdir(path.join(dir, 'pages'), { recursive: true, mode: 0o700 });
@@ -420,7 +441,8 @@ export class RegistryQueue {
     try {
       if (!job.models) job.models = { recognition:this.options.model, regions:this.options.regionModel || this.options.model };
       job.status = 'working'; await this.save(job);
-      await this.process(job);
+      if (job.pipeline === 'document') await this.processDocuments(job);
+      else await this.process(job);
       job.status = 'done'; delete job.error;
     } catch (error) {
       job.status = 'error';
@@ -429,6 +451,58 @@ export class RegistryQueue {
       try { await this.save(job); }
       finally { this.running = false; this.schedule(); }
     }
+  }
+  private async processDocuments(job: RegistryJob) {
+    const db = this.options.store!, dir = this.jobDir(job.id), models = job.models!;
+    const reader = { apiKey: this.options.apiKey, fetcher: this.options.fetcher };
+    const saved = new Map((await db.transcripts(job.id)).map(page => [page.page, page]));
+    let previous = '';
+    for (let page = 1; page <= job.pages; page++) {
+      let data = saved.get(page);
+      if (!data) {
+        const scan = await scanPage(dir, page);
+        const transcript = await transcribe({ ...reader, model: models.recognition }, await readFile(scan.image), page, previous);
+        await db.saveTranscript(job.id, page, transcript);
+        data = { page, transcript, readings: null };
+      }
+      if (data.readings === null) {
+        const readings: NonNullable<StoredPage['readings']> = [];
+        for (const box of data.transcript.regions) {
+          const reading = await recognizeRegion(dir, page, box.document, box, 'auto', { ...reader, model: models.regions }, true);
+          if (reading.status === 'error') {
+            throw new UserError('Не удалось обработать фрагмент страницы ' + page + '. Повторите обработку, чтобы заполнить реестр.', 502);
+          }
+          if (!readings.some(r => r.document === box.document && r.id === reading.id)) readings.push({ ...reading, document: box.document });
+        }
+        await db.saveReadings(job.id, page, readings);
+      }
+      const started = data.transcript.documents.at(-1);
+      if (started) previous = started.title || started.text.slice(0, 200) || 'Документ';
+      if (job.processedPages < page) { job.processedPages = page; await this.save(job); }
+    }
+
+    const pages = await db.transcripts(job.id);
+    const documents = documentsFromPages(pages);
+    const entries = await db.documentFields(job.id);
+    job.documentsTotal = documents.length;
+    job.recordCount = entries.size;
+    await this.save(job);
+    for (const [position, parts] of documents.entries()) {
+      let entry = entries.get(position);
+      if (!entry) {
+        entry = await extractDocument({ ...reader, model: models.chat! }, parts, position);
+        await db.saveDocumentFields(job.id, position, entry);
+        entries.set(position, entry);
+        job.recordCount = entries.size;
+        await this.save(job);
+      }
+      await saveDocument(dir, position, entry.row);
+    }
+    const rows = documents.map((_, i) => entries.get(i)!.row);
+    await db.indexFile(job.id, job.project ?? 'Общий', job.originalName, rows, pages.map(sourceText));
+    const temporary = path.join(dir, 'result.pending.xlsx');
+    await writeRegistry(temporary, job.originalName, pages.map(p => p.transcript), rows);
+    await rename(temporary, this.resultPath(job.id));
   }
   private async process(job: RegistryJob) {
     const dir = this.jobDir(job.id);
@@ -463,7 +537,7 @@ export class RegistryQueue {
     const rows = registryRows(pages);
     for (const [index,row] of rows.entries()) await saveDocument(dir,index,row);
     const resultPath = this.resultPath(job.id), temporary = path.join(dir, 'result.pending.xlsx');
-    job.recordCount = await writeRegistry(temporary, job.originalName, pages);
+    job.recordCount = await writeRegistry(temporary, job.originalName, pages, rows);
     await rename(temporary, resultPath);
   }
 }
