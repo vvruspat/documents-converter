@@ -111,13 +111,12 @@ async function pdfPages(filename: string): Promise<number> {
 }
 
 async function recognizePage(image: Buffer, page: number, previous: string, apiKey: string, model: string, fetcher: typeof fetch): Promise<PageResult> {
-  let lastError: unknown;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
       const response = await fetcher('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'X-Title': 'Documents Converter' },
-        body: JSON.stringify({ model, temperature: 0, max_tokens: 4000, provider: { require_parameters: true },
+        body: JSON.stringify({ model, temperature: 0, provider: { require_parameters: true },
           messages: [
             { role: 'system', content: pagePrompt },
             { role: 'user', content: [
@@ -137,16 +136,17 @@ async function recognizePage(image: Buffer, page: number, previous: string, apiK
       }
       const body = await response.json() as { choices?: { finish_reason?: string; message?: { content?: string; refusal?: string } }[] };
       const choice = body.choices?.[0];
-      if (choice?.finish_reason === 'length' || !choice?.message?.content || choice.message.refusal) throw new Error('Incomplete model response');
+      if (choice?.finish_reason === 'length') {
+        throw new UserError(`Модель достигла предела длины ответа при распознавании страницы ${page}.`, 502);
+      }
+      if (!choice?.message?.content || choice.message.refusal) throw new Error('Incomplete model response');
       const parsed = JSON.parse(choice.message.content.replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, ''));
       return pageSchema.parse(parsed);
     } catch (error) {
       if (error instanceof UserError) throw error;
-      lastError = error;
       if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** attempt));
     }
   }
-  void lastError;
   throw new UserError(`Не удалось распознать страницу ${page}. Попробуйте продолжить обработку позже.`, 502);
 }
 

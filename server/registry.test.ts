@@ -197,6 +197,7 @@ test('retry keeps recognized pages and continues after an upstream error', async
     const payload = JSON.parse(String(init?.body));
     const page = Number(payload.messages[1].content[0].text.match(/PDF page (\d+)/)[1]);
     seen.push(page);
+    assert.equal(Object.hasOwn(payload, 'max_tokens'), false);
     if (page === 2 && failSecondPage) return new Response('', { status: 402 });
     return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ blank: page === 2, continuesPrevious: false,
       documents: page === 1 ? [{ name: 'Акт', number: '1', date: '', organization: '', uncertain: true }] : [] }) } }] });

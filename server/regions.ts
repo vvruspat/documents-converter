@@ -110,7 +110,6 @@ async function readCrop(buffer: Buffer, box: RegionBox, config: Config) {
     body: JSON.stringify({
       model: config.model,
       temperature: 0,
-      max_tokens: 1800,
       messages: [
         {
           role: 'system',

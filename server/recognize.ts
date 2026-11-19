@@ -107,7 +107,7 @@ async function requestRecognition(input: RecognitionInput, apiKey: string, model
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'X-Title': 'Documents Converter' },
       body: JSON.stringify({
-        model, temperature: 0, max_tokens: 16000, provider: { require_parameters: true },
+        model, temperature: 0, provider: { require_parameters: true },
         ...(pdf ? { plugins: [{ id: 'file-parser', pdf: { engine: 'native' } }] } : {}),
         messages: [
           { role: 'system', content: extractionPrompt },
