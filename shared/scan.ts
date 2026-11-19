@@ -1,5 +1,5 @@
 export type ScanWord = { x: number; y: number; w: number; h: number; text: string; line: string };
-export type ScanLayout = { width: number; height: number; rotation?: number; words: ScanWord[] };
+export type ScanLayout = { width: number; height: number; rotation?: number; ocrStatus?: 'pending' | 'ready' | 'failed'; words: ScanWord[] };
 export const fieldLabels = {
   name: 'Наименование',
   number: 'Номер',

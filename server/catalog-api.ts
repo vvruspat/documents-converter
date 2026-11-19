@@ -1,7 +1,6 @@
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
 import { safeFilename } from './history.js';
-import { scanPage, saveDocument } from './scan.js';
+import { comparisonLayout, scanPage, saveDocument, savePageText } from './scan.js';
 import { regionPreview, regionsFor, recognizeRegion, regionBox } from './regions.js';
 import type { Express, Request } from 'express';
 import rateLimit from 'express-rate-limit';
@@ -9,7 +8,7 @@ import { z } from 'zod';
 import { assess, kinds } from '../shared/catalog.js';
 import { catalogCards, retrieve } from './catalog.js';
 import type { ConversionStore } from './history.js';
-import type { RegistryQueue } from './registry.js';
+import type { RegistryJob, RegistryQueue } from './registry.js';
 import { UserError } from './recognize.js';
 
 export function projectName(value: unknown) {
@@ -23,16 +22,22 @@ const setInput = z.object({
 });
 export function installCatalog(app: Express, queue: RegistryQueue, db: ConversionStore, config: { model: string; regionModel?: string; apiKey: string }, fetcher: typeof fetch) {
   const indexing = new Map<string, Promise<void>>();
+  async function indexJob(job: RegistryJob) {
+    let work = indexing.get(job.id);
+    if (!work) {
+      work = Promise.all([queue.catalogRows(job), queue.pageTexts(job)])
+        .then(([rows, texts]) => db.indexFile(job.id, job.project ?? 'Общий', job.originalName, rows, texts))
+        .finally(() => indexing.delete(job.id));
+      indexing.set(job.id, work);
+    }
+    await work;
+  }
   async function cards(project: string) {
     await queue.ready;
     const jobs = queue.list().filter(job => job.status === 'done' && (job.project ?? 'Общий') === project);
     const existing = await db.indexedJobs(project);
     for (const job of jobs) {
-      if (existing.has(job.id)) continue;
-      if (!indexing.has(job.id)) {
-        indexing.set(job.id, Promise.all([queue.catalogRows(job), queue.pageTexts(job)]).then(([rows,texts]) => db.indexFile(job.id, project, job.originalName, rows,texts)).finally(() => indexing.delete(job.id)));
-      }
-      await indexing.get(job.id);
+      if (!existing.has(job.id)) await indexJob(job);
     }
     return catalogCards(await db.catalogFiles(project, jobs.filter(job => queue.get(job.id)).map(job => job.id)));
   }
@@ -68,7 +73,7 @@ export function installCatalog(app: Express, queue: RegistryQueue, db: Conversio
     const row = rows[index];
     if (!row) throw new UserError('Документ не найден.',404);
     const dir = path.dirname(queue.sourcePath(job.id));
-    return {job, index, rows, row, dir};
+    return {job, index, rows, row, dir, indexed};
   }
   function documentPage(req: Request, source: Awaited<ReturnType<typeof documentSource>>) {
     const {row, rows, index} = source;
@@ -104,8 +109,16 @@ export function installCatalog(app: Express, queue: RegistryQueue, db: Conversio
     }
     const scan = await scanPage(dir,page);
     if (asset === 'image') { res.type('jpeg').sendFile(scan.image,{dotfiles:'allow'}); return; }
-    const [evidence, regions] = await Promise.all([queue.evidence(job.id,page,ordinal), regionsFor(dir,page,ordinal)]);
-    res.json({ ...JSON.parse(await readFile(scan.layout,'utf8')), evidence, regions,
+    const [layout, evidence, regions] = await Promise.all([
+      comparisonLayout(scan, { poll: req.query.poll === '1', retry: req.query.retry === '1' }, async text => {
+        await savePageText(dir, page, text);
+        if (!source.indexed) await indexJob(job);
+        await db.indexPageText(job.id, page, text);
+      }),
+      queue.evidence(job.id,page,ordinal), regionsFor(dir,page,ordinal),
+    ]);
+    res.set('Cache-Control', 'no-store');
+    res.status(layout.ocrStatus === 'pending' ? 202 : 200).json({ ...layout, evidence, regions,
       shared:rows.some((r,i) => i !== index && r.first <= page && page <= r.last) });
   });
   app.get('/api/registry/:id/source', async (req, res) => {

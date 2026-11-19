@@ -39,16 +39,23 @@ export function ScanComparison({ card, close, preferredJob }: { card: Card; clos
     const cancel = new AbortController();
     setResult(undefined);
     setHover(null);
-    fetch(key, { signal: cancel.signal })
-      .then(async (r) => {
-        if (!r.ok) throw new Error((await r.json()).error);
+    let timer: ReturnType<typeof setTimeout>;
+    async function refresh(retryFailed = false) {
+      try {
+        const r = await fetch(key + '&poll=1' + (retryFailed ? '&retry=1' : ''), { signal: cancel.signal });
         const data = await r.json();
-        if (!cancel.signal.aborted) setResult({ key, layout: data });
-      })
-      .catch((e) => {
-        if (!cancel.signal.aborted) setResult({ key, error: e.message || 'Не удалось открыть страницу.' });
-      });
-    return () => cancel.abort();
+        if (!r.ok) throw new Error(data.error || 'Не удалось открыть страницу.');
+        if (cancel.signal.aborted) return;
+        setResult({ key, layout: data });
+        if (data.ocrStatus === 'pending') timer = setTimeout(refresh, 750);
+      } catch (e) {
+        if (!cancel.signal.aborted) setResult(current => ({
+          ...current, key, error: e instanceof Error ? e.message : 'Не удалось открыть страницу.',
+        }));
+      }
+    }
+    void refresh(retry > 0);
+    return () => { cancel.abort(); clearTimeout(timer); };
   }, [key, retry]);
   const value = field ? card[field] : '';
   const marks = useMemo(() => {
@@ -104,6 +111,7 @@ export function ScanComparison({ card, close, preferredJob }: { card: Card; clos
               const i = Number(e.target.value);
               setSource(i);
               setPage(card.sources[i].first);
+              setRetry(0);
             }}
           >
             {card.sources.map((s, i) => (
@@ -141,7 +149,7 @@ export function ScanComparison({ card, close, preferredJob }: { card: Card; clos
           <span>Проверить</span>
           {card.reviewFields.map(key => <button className="review-value" key={key} onClick={() => setField(key)}>{fieldLabels[key]}</button>)}
         </div>}
-        {layout && field && (value || card.reviewFields.includes(field)) && !marks.length && <small>Место на листе не подтверждено</small>}
+        {layout && !error && layout.ocrStatus !== 'pending' && layout.ocrStatus !== 'failed' && field && (value || card.reviewFields.includes(field)) && !marks.length && <small>Место на листе не подтверждено</small>}
       </div>
       {layout ? (
         <ScanRegions key={key} saved={layout.regions ?? []} width={layout.width} height={layout.height}
@@ -223,20 +231,21 @@ export function ScanComparison({ card, close, preferredJob }: { card: Card; clos
           {error && <button onClick={() => setRetry((v) => v + 1)}>Повторить</button>}
         </p>
       )}
-      {layout && (!layout.words.length || layout.shared) && (
-        <small>
-          {!layout.words.length ? 'На листе не удалось распознать текст. ' : ''}
-          {layout.shared && 'Лист содержит несколько документов. В PDF он сохраняется целиком.'}
-        </small>
-      )}
+      {layout && <small role="status">
+        {error || (layout.ocrStatus === 'pending' ? 'Распознаём текст для сравнения…' :
+          layout.ocrStatus === 'failed' ? 'Не удалось завершить распознавание текста.' :
+          !layout.words.length ? 'На листе не удалось распознать текст.' : '')}
+        {(error || layout.ocrStatus === 'failed') && <button onClick={() => setRetry(v => v + 1)}>Повторить</button>}
+        {layout.shared && ' Лист содержит несколько документов. В PDF он сохраняется целиком.'}
+      </small>}
       <footer>
-        <button aria-label="Предыдущий лист" disabled={page === source.first} onClick={() => setPage(page - 1)}>
+        <button aria-label="Предыдущий лист" disabled={page === source.first} onClick={() => { setPage(page - 1); setRetry(0); }}>
           <ChevronLeft size={16} />
         </button>
         <span>
           Лист {page - source.first + 1} из {source.last - source.first + 1}
         </span>
-        <button aria-label="Следующий лист" disabled={page === source.last} onClick={() => setPage(page + 1)}>
+        <button aria-label="Следующий лист" disabled={page === source.last} onClick={() => { setPage(page + 1); setRetry(0); }}>
           <ChevronRight size={16} />
         </button>
         <button aria-label="Уменьшить" disabled={zoom <= 100} onClick={() => setZoom(zoom - 50)}>

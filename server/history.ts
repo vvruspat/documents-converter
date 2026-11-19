@@ -188,6 +188,11 @@ export class ConversionStore {
     } catch (e) { await client.query('ROLLBACK'); throw e; }
     finally { client.release(); }
   }
+  async indexPageText(job: string, page: number, body: string) {
+    await this.pool.query(`INSERT INTO ${this.namespace}.catalog_pages (job,page,body)
+      SELECT job,$2,$3 FROM ${this.namespace}.catalog_files WHERE job=$1
+      ON CONFLICT (job,page) DO UPDATE SET body=EXCLUDED.body`, [job,page,body]);
+  }
   async findPassages(project: string, question: string): Promise<{ job: string; page: number; excerpt: string }[]> {
     const words = question.match(/[\p{L}\p{N}]+/gu)?.filter(word => word.length > 2 || /\d/.test(word)).slice(0,32);
     if (!words?.length) return [];
