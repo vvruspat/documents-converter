@@ -8,11 +8,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 import ExcelJS from 'exceljs';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
+import { comparisonLayout, preparePageImage } from './scan.js';
 import { locate, fieldLines } from '../shared/scan.js';
 import supertest from 'supertest';
 import { createApp } from './app.js';
 import type { ConversionStore } from './history.js';
-import { RegistryQueue, excelDate, preparePageImage, registryRows } from './registry.js';
+import { RegistryQueue, excelDate, registryRows } from './registry.js';
 
 async function waitForJob(queue: RegistryQueue, id: string) {
   const deadline = Date.now() + 120_000;
@@ -33,11 +34,21 @@ test('straightens a sideways scan before OCR and model input', async () => {
     const sideways = path.join(directory, 'sideways.jpg');
     await sharp(`${prefix}.jpg`).rotate(90).jpeg().toFile(sideways);
     const prepared = await preparePageImage(sideways);
-    const metadata = await sharp(prepared.image).metadata();
+    const metadata = await sharp(sideways).metadata();
     assert.ok(metadata.height! > metadata.width!);
-    assert.match(prepared.ocr, /Materials register/);
-    assert.deepEqual([prepared.layout.width, prepared.layout.height], [metadata.width, metadata.height]);
-    const words = prepared.layout.words;
+    assert.equal(prepared.ocrStatus, 'pending');
+    assert.deepEqual(prepared.words, []);
+    assert.deepEqual([prepared.width, prepared.height], [metadata.width, metadata.height]);
+    const scan = { image: sideways, layout: path.join(directory, 'layout.json') };
+    await writeFile(scan.layout, JSON.stringify(prepared));
+    let saves = 0;
+    const save = async (text: string) => { saves++; assert.match(text, /Materials register/); };
+    const first = await comparisonLayout(scan, { poll: true }, save);
+    assert.equal(first.ocrStatus, 'pending');
+    const { words } = await comparisonLayout(scan, {}, save);
+    await rm(sideways); // Subsequent opens must use the persisted words.
+    assert.deepEqual((await comparisonLayout(scan, {}, save)).words, words);
+    assert.equal(saves, 1);
     assert.ok(words.every(w => w.x >= 0 && w.y >= 0 && w.x + w.w <= metadata.width && w.y + w.h <= metadata.height));
     const range = locate(words, 'Materials register');
     assert.ok(range);
@@ -45,6 +56,27 @@ test('straightens a sideways scan before OCR and model input', async () => {
     assert.equal(fieldLines(title, 'Реестр материалов')[0].text, 'Реестр материалов');
     assert.equal(locate([...title, ...title], 'Materials register'), undefined);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('reuses legacy coordinates and retries failed comparison OCR only on request', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'registry-layout-test-'));
+  const scan = { image: path.join(dir, 'page.jpg'), layout: path.join(dir, 'layout.json') };
+  const save = async () => { assert.fail('No text expected from an empty page'); };
+  try {
+    const geometry = { width: 100, height: 100, rotation: 0 };
+    const old = { ...geometry, words: [{ x: 0, y: 0, w: 10, h: 10, line: '1', text: 'Page' }] };
+    await writeFile(scan.layout, JSON.stringify(old));
+    assert.deepEqual(await comparisonLayout(scan, {}, save), old);
+    await writeFile(scan.layout, JSON.stringify({ ...geometry, words: [] }));
+    assert.equal((await comparisonLayout(scan, {}, save)).ocrStatus, 'failed');
+    await sharp({ create: { width: 100, height: 100, channels: 3, background: '#fff' } }).jpeg().toFile(scan.image);
+    assert.equal((await comparisonLayout(scan, {}, save)).ocrStatus, 'failed');
+    const blank = await comparisonLayout(scan, { retry: true }, save);
+    assert.equal(blank.ocrStatus, 'ready');
+    assert.deepEqual(blank.words, []);
+    await rm(scan.image);
+    assert.deepEqual(await comparisonLayout(scan, {}, save), blank);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('separates an act from its appendix and fills appendix metadata from the act', () => {
@@ -111,6 +143,9 @@ test('creates a register from scanned PDF pages and persists the completed resul
     assert.equal(requests, 2);
     const dir = path.dirname(queue.sourcePath(created.id));
     const pdf = await PDFDocument.load(await readFile(path.join(dir, 'documents/0.pdf')));
+    const geometry = JSON.parse(await readFile(path.join(dir, 'scans/1.json'),'utf8'));
+    assert.equal(geometry.ocrStatus, 'pending');
+    assert.deepEqual(geometry.words, []);
     const original = await PDFDocument.load(await readFile(fixture));
     assert.equal(pdf.getPageCount(), original.getPageCount());
     for (const [index, page] of pdf.getPages().entries()) {
@@ -246,7 +281,7 @@ test('reads individual cropped regions, isolates documents sharing a page and re
     assert.equal(queue.get(job.id)?.status,'done',queue.get(job.id)?.error);
     assert.equal(pageCalls,2);
     assert.equal(cropCalls,3);
-    const app = createApp({historyStore:{catalogFiles:async()=>[]} as unknown as ConversionStore,registryQueue:queue,model:'page-model',regionModel:'crop-model',apiKey:'test',production:false,password:'',sessionSecret:''},fetcher);
+    const app = createApp({historyStore:{catalogFiles:async()=>[],indexFile:async()=>{},indexPageText:async()=>{}} as unknown as ConversionStore,registryQueue:queue,model:'page-model',regionModel:'crop-model',apiKey:'test',production:false,password:'',sessionSecret:''},fetcher);
     const base='/api/registry/'+job.id+'/documents/';
     const {body:layout}=await supertest(app).get(base+'0/layout?page=1').expect(200);
     assert.equal(layout.regions.length,2);

@@ -7,9 +7,8 @@ import { access, link, mkdir, readFile, readdir, rename, rm, writeFile } from 'n
 import path from 'node:path';
 import { promisify } from 'node:util';
 import ExcelJS from 'exceljs';
-import { pageText, scanPage, saveDocument } from './scan.js';
-export { preparePageImage } from './scan.js';
-import { fieldLabels, type Field, type ScanLayout } from '../shared/scan.js';
+import { scanPage, savePageText, saveDocument } from './scan.js';
+import { fieldLabels, type Field } from '../shared/scan.js';
 import { z } from 'zod';
 import { fieldsToReview, unreadableText, kinds, type CatalogRow } from '../shared/catalog.js';
 import { safeFilename } from './history.js';
@@ -110,7 +109,7 @@ async function pdfPages(filename: string): Promise<number> {
   }
 }
 
-async function recognizePage(image: Buffer, ocr: string, page: number, previous: string, apiKey: string, model: string, fetcher: typeof fetch): Promise<PageResult> {
+async function recognizePage(image: Buffer, page: number, previous: string, apiKey: string, model: string, fetcher: typeof fetch): Promise<PageResult> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
@@ -121,7 +120,7 @@ async function recognizePage(image: Buffer, ocr: string, page: number, previous:
           messages: [
             { role: 'system', content: pagePrompt },
             { role: 'user', content: [
-              { type: 'text', text: `PDF page ${page}. Most recent document: ${previous || 'none'}. Index only documents visible on THIS page. OCR draft (may contain errors; verify against image):\n${ocr}` },
+              { type: 'text', text: `PDF page ${page}. Most recent document: ${previous || 'none'}. Index only documents visible on THIS page.` },
               { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${image.toString('base64')}`, detail: 'high' } },
             ] },
           ],
@@ -441,11 +440,10 @@ export class RegistryQueue {
       try { result = pageSchema.parse(JSON.parse(await readFile(file, 'utf8'))); }
       catch {
         const scan = await scanPage(dir,page);
-        const layout: ScanLayout = JSON.parse(await readFile(scan.layout,'utf8'));
         const image = await readFile(scan.image);
-        const ocr = pageText(layout.words);
-        await writeFile(path.join(dir, 'pages', page + '.txt'), ocr, { mode: 0o600 });
-        result = await recognizePage(image, ocr, page, previous, this.options.apiKey, job.models!.recognition, this.options.fetcher ?? fetch);
+        result = await recognizePage(image, page, previous, this.options.apiKey, job.models!.recognition, this.options.fetcher ?? fetch);
+        const quotes = [...new Set(result.evidence?.map(item => item.quote).filter(Boolean))];
+        if (quotes.length) await savePageText(dir, page, quotes.join('\n'));
         const temp = `${file}.${randomUUID()}.tmp`;
         await writeFile(temp, JSON.stringify(result), { mode: 0o600 });
         await rename(temp, file);

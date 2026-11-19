@@ -43,17 +43,7 @@ export async function preparePageImage(target: string) {
     /* Sparse pages can lack a reliable orientation. */
   }
   const { width, height } = await sharp(image).metadata();
-  let words: ScanWord[] = [];
-  try {
-    const { stdout } = await run('tesseract', [target, 'stdout', '-l', 'rus+eng', '--psm', '3', 'tsv'], {
-      timeout: 60_000,
-      maxBuffer: 8_000_000,
-    });
-    words = readWords(stdout, width, height);
-  } catch {
-    /* The normalized image is available even without OCR. */
-  }
-  return { image, ocr: pageText(words), layout: { width, height, rotation, words } satisfies ScanLayout };
+  return { width, height, rotation, words: [], ocrStatus: 'pending' } satisfies ScanLayout;
 }
 
 export function pageText(words: ScanWord[]) {
@@ -107,7 +97,7 @@ export async function scanPage(dir: string, page: number) {
         { timeout: 120_000, maxBuffer: 256_000 }
       );
       const result = await preparePageImage(temp + '.jpg');
-      await writeFile(temp + '.json', JSON.stringify(result.layout), { mode: 0o600 });
+      await writeFile(temp + '.json', JSON.stringify(result), { mode: 0o600 });
       await rename(temp + '.jpg', image);
       await rename(temp + '.json', layout);
     } catch {
@@ -118,6 +108,64 @@ export async function scanPage(dir: string, page: number) {
   });
   return { layout, image };
 }
+// One full-page OCR process per worker, including requests for different jobs.
+let ocrQueue = Promise.resolve();
+const requested = new Map<string, Promise<ScanLayout>>();
+
+async function atomicWrite(file: string, text: string) {
+  const temp = file + '.' + randomUUID() + '.tmp';
+  try {
+    await writeFile(temp, text, { mode: 0o600 });
+    await rename(temp, file);
+  } finally { await rm(temp, { force: true }); }
+}
+
+export async function comparisonLayout(
+  scan: { image: string; layout: string }, options: { poll?: boolean; retry?: boolean },
+  saveText: (text: string) => Promise<void>
+): Promise<ScanLayout> {
+  const layout: ScanLayout = JSON.parse(await readFile(scan.layout, 'utf8'));
+  // Older files contain words but no status. Give old empty layouts one fresh attempt.
+  if (layout.ocrStatus === 'ready' || layout.words.length) return layout;
+  if (layout.ocrStatus === 'failed' && !options.retry && !requested.has(scan.layout)) return layout;
+  let work = requested.get(scan.layout);
+  if (!work) {
+    work = ocrQueue.then(async () => {
+      const current: ScanLayout = JSON.parse(await readFile(scan.layout, 'utf8'));
+      if (current.ocrStatus === 'ready' || current.words.length) return current;
+      try {
+        const { stdout } = await run('tesseract', [scan.image, 'stdout', '-l', 'rus+eng', '--psm', '3', 'tsv'], {
+          timeout: 60_000, maxBuffer: 8_000_000, env: { ...process.env, OMP_THREAD_LIMIT: '1' },
+        });
+        current.words = readWords(stdout, current.width, current.height);
+        if (current.words.length) await saveText(pageText(current.words));
+        current.ocrStatus = 'ready';
+      } catch {
+        current.words = [];
+        current.ocrStatus = 'failed';
+      }
+      await atomicWrite(scan.layout, JSON.stringify(current));
+      return current;
+    }).finally(() => requested.delete(scan.layout));
+    requested.set(scan.layout, work);
+    ocrQueue = work.then(() => {}, () => {});
+    // Return geometry immediately on the first interactive request.
+    if (options.poll) return { ...layout, ocrStatus: 'pending' };
+  }
+  if (!options.poll) return work;
+  // Keep the scan visible even if other pages are ahead of this page in the queue.
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([work, new Promise<ScanLayout>(resolve => {
+      timer = setTimeout(() => resolve({ ...layout, ocrStatus: 'pending' }), 2500);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+export async function savePageText(dir: string, page: number, text: string) {
+  await atomicWrite(path.join(dir, 'pages', page + '.txt'), text);
+}
+
 export async function saveDocument(dir: string, index: number, row: { first: number; last: number; name: string }) {
   const file = path.join(dir, 'documents', index + '.pdf');
   await once(file, async () => {

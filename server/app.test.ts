@@ -416,9 +416,17 @@ test('indexes old jobs, groups matching sources and resolves a kit when its docu
   const base = '/api/registry/' + volume + '/documents/' + occurrence.index;
   await request(app).get(base + '/pdf').expect(401);
   await request(app).get(base + '/layout?page=1').set('Cookie', cookie()).expect(404);
+  const opening = await request(app).get(base + '/layout?page=2&poll=1').set('Cookie', cookie()).expect(202);
+  assert.equal(opening.body.ocrStatus, 'pending');
+  assert.ok(opening.body.width > 0);
   const layout = await request(app).get(base + '/layout?page=2').set('Cookie', cookie()).expect(200);
   assert.ok(layout.body.words.length);
   assert.deepEqual(layout.body.evidence, []);
+  assert.equal(layout.body.ocrStatus, 'ready');
+  const cached = await request(app).get(base + '/layout?page=2&poll=1').set('Cookie', cookie()).expect(200);
+  assert.deepEqual(cached.body.words, layout.body.words);
+  const hits = await historyStore.findPassages(project, layout.body.words.map((w: {text: string}) => w.text).join(' '));
+  assert.ok(hits.some(hit => hit.job === occurrence.job && hit.page === 2));
   await request(app).get(base + '/image?page=2').set('Cookie', cookie()).expect('Content-Type', /jpeg/).expect(200);
   const file = await request(app).get(base + '/pdf').set('Cookie', cookie()).expect('Content-Disposition', /attachment/).expect(200);
   assert.equal((await PDFDocument.load(file.body)).getPageCount(), 1);
