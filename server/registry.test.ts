@@ -4,6 +4,7 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import ExcelJS from 'exceljs';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
@@ -12,6 +13,17 @@ import supertest from 'supertest';
 import { createApp } from './app.js';
 import type { ConversionStore } from './history.js';
 import { RegistryQueue, excelDate, preparePageImage, registryRows } from './registry.js';
+
+async function waitForJob(queue: RegistryQueue, id: string) {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const job = queue.get(id);
+    assert.ok(job);
+    if (job.status === 'done' || job.status === 'error') return job;
+    await delay(100);
+  }
+  assert.fail('Timed out waiting for registry job ' + id + ': ' + queue.get(id)?.status);
+}
 
 test('straightens a sideways scan before OCR and model input', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'registry-orientation-test-'));
@@ -92,11 +104,7 @@ test('creates a register from scanned PDF pages and persists the completed resul
     const queue = new RegistryQueue({ directory, apiKey: 'test', model: 'test', fetcher: fetcher as typeof fetch });
     const created = await queue.create(source, 'Скан.pdf');
     assert.equal(created.pages, 2);
-    let job = queue.get(created.id);
-    for (let attempt = 0; attempt < 100 && job?.status !== 'done' && job?.status !== 'error'; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      job = queue.get(created.id);
-    }
+    const job = await waitForJob(queue, created.id);
     assert.equal(job?.status, 'done', job?.error);
     assert.equal(job.recordCount, 1);
     assert.equal(job.processedPages, 2);
@@ -137,9 +145,7 @@ test('creates a register from scanned PDF pages and persists the completed resul
     assert.equal(requests, 2);
     const recreated = await restarted.reprocess(created.id);
     assert.notEqual(recreated.id, created.id);
-    for (let attempt = 0; attempt < 100 && restarted.get(recreated.id)?.status !== 'done'; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    await waitForJob(restarted, recreated.id);
     assert.equal(restarted.get(recreated.id)?.status, 'done');
     assert.equal(requests, 4);
     assert.equal(restarted.get(created.id)?.status, 'done');
@@ -163,12 +169,12 @@ test('retry keeps recognized pages and continues after an upstream error', async
   try {
     const queue = new RegistryQueue({ directory, apiKey: 'test', model: 'test', fetcher });
     const created = await queue.create(source, 'Скан.pdf');
-    for (let attempt = 0; attempt < 100 && queue.get(created.id)?.status !== 'error'; attempt++) await new Promise(resolve => setTimeout(resolve, 100));
+    await waitForJob(queue, created.id);
     assert.equal(queue.get(created.id)?.status, 'error');
     assert.equal(queue.get(created.id)?.processedPages, 1);
     failSecondPage = false;
     await queue.retry(created.id);
-    for (let attempt = 0; attempt < 100 && queue.get(created.id)?.status !== 'done'; attempt++) await new Promise(resolve => setTimeout(resolve, 100));
+    await waitForJob(queue, created.id);
     assert.equal(queue.get(created.id)?.status, 'done');
     assert.deepEqual(seen, [1, 2, 2]);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -185,11 +191,7 @@ test('accepts a PDF larger than the ordinary converter limit', async () => {
     const response = await supertest(app).post('/api/registry').attach('pdf', source);
     assert.equal(response.status, 202, response.text);
     assert.equal(response.body.job.pages, 2);
-    let job = queue.get(response.body.job.id);
-    for (let attempt = 0; attempt < 100 && job?.status !== 'done' && job?.status !== 'error'; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      job = queue.get(response.body.job.id);
-    }
+    const job = await waitForJob(queue, response.body.job.id);
     assert.equal(job?.status, 'done', job?.error);
     const result = await supertest(app).get(`/api/registry/${job.id}/result`);
     assert.equal(result.status, 200);
@@ -240,7 +242,7 @@ test('reads individual cropped regions, isolates documents sharing a page and re
     queue = new RegistryQueue({directory,model:'page-model',regionModel:'crop-model',apiKey:'test',fetcher});
     await queue.models.save(initial);
     const job = await queue.create(source,'Том.pdf');
-    for (let i=0;i<150 && !['done','error'].includes(queue.get(job.id)!.status);i++) await new Promise(r=>setTimeout(r,100));
+    await waitForJob(queue, job.id);
     assert.equal(queue.get(job.id)?.status,'done',queue.get(job.id)?.error);
     assert.equal(pageCalls,2);
     assert.equal(cropCalls,3);
