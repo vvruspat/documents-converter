@@ -1,3 +1,5 @@
+import type { CatalogRow, DocumentSet, Requirement } from '../shared/catalog.js';
+import type { IndexedFile } from './catalog.js';
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
@@ -52,6 +54,15 @@ export class ConversionStore {
       await client.query(`CREATE TABLE IF NOT EXISTS ${this.namespace}.legacy_conversion_imports (id UUID PRIMARY KEY, imported_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
       await client.query(`CREATE TABLE IF NOT EXISTS ${this.namespace}.pending_file_deletions (id UUID PRIMARY KEY)`);
       await client.query(`CREATE TABLE IF NOT EXISTS ${this.namespace}.history_migrations (key TEXT PRIMARY KEY, completed_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+      await client.query(`CREATE TABLE IF NOT EXISTS ${this.namespace}.catalog_files (
+        job uuid PRIMARY KEY, file text NOT NULL, project text NOT NULL, rows jsonb NOT NULL)`);
+      await client.query(`CREATE TABLE IF NOT EXISTS ${this.namespace}.document_sets (
+        id uuid PRIMARY KEY, project text NOT NULL, name text NOT NULL, requirements jsonb NOT NULL, confirmations jsonb NOT NULL DEFAULT '{}'::jsonb)`);
+      await client.query(`ALTER TABLE ${this.namespace}.catalog_files ADD COLUMN IF NOT EXISTS text_indexed boolean NOT NULL DEFAULT false`);
+      await client.query(`CREATE TABLE IF NOT EXISTS ${this.namespace}.catalog_pages (
+        job uuid REFERENCES ${this.namespace}.catalog_files(job) ON DELETE CASCADE, page integer NOT NULL,
+        body text NOT NULL, terms tsvector GENERATED ALWAYS AS (to_tsvector('russian',body)) STORED, PRIMARY KEY(job,page))`);
+      await client.query(`CREATE INDEX IF NOT EXISTS catalog_page_terms ON ${this.namespace}.catalog_pages USING gin(terms)`);
       const finalized = await client.query(`SELECT key FROM ${this.namespace}.history_migrations WHERE key='sqlite-finalized'`);
       const legacy = finalized.rowCount ? [] : await this.readLegacy();
       let imported = 0;
@@ -158,6 +169,56 @@ export class ConversionStore {
       await rm(this.filePath(id, 'result'), { force: true });
       await this.pool.query(`DELETE FROM ${this.namespace}.pending_file_deletions WHERE id=$1`, [id]);
     }
+  }
+  async indexedJobs(project: string): Promise<Set<string>> {
+    await this.ready();
+    const { rows } = await this.pool.query(`SELECT job FROM ${this.namespace}.catalog_files WHERE project=$1 AND text_indexed`, [project]);
+    return new Set(rows.map(row => row.job));
+  }
+  async indexFile(job: string, project: string, file: string, rows: CatalogRow[], texts: string[]) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`INSERT INTO ${this.namespace}.catalog_files (job,file,project,rows) VALUES ($1,$2,$3,$4) ON CONFLICT(job) DO NOTHING`, [job,file,project,JSON.stringify(rows)]);
+      await client.query(`INSERT INTO ${this.namespace}.catalog_pages (job,page,body)
+        SELECT $1,ordinality,body FROM unnest($2::text[]) WITH ORDINALITY AS p(body,ordinality)
+        WHERE body <> '' ON CONFLICT DO NOTHING`, [job,texts]);
+      await client.query(`UPDATE ${this.namespace}.catalog_files SET text_indexed=true WHERE job=$1`, [job]);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK'); throw e; }
+    finally { client.release(); }
+  }
+  async findPassages(project: string, question: string): Promise<{ job: string; page: number; excerpt: string }[]> {
+    const words = question.match(/[\p{L}\p{N}]+/gu)?.filter(word => word.length > 2 || /\d/.test(word)).slice(0,32);
+    if (!words?.length) return [];
+    const result = await this.pool.query(`SELECT p.job,p.page,
+      ts_headline('russian',p.body,q,'MaxWords=80, MinWords=15, MaxFragments=3') AS excerpt
+      FROM ${this.namespace}.catalog_pages p JOIN ${this.namespace}.catalog_files f ON p.job=f.job,
+      websearch_to_tsquery('russian',$2) q WHERE f.project=$1 AND p.terms @@ q
+      ORDER BY ts_rank(p.terms,q) DESC,p.job,p.page LIMIT 8`, [project,words.join(' OR ')]);
+    return result.rows;
+  }
+  async catalogFiles(project: string, ids: string[]): Promise<IndexedFile[]> {
+    const result = await this.pool.query(`SELECT job,file,rows FROM ${this.namespace}.catalog_files WHERE project=$1 AND job=ANY($2::uuid[]) ORDER BY job`, [project,ids]);
+    return result.rows;
+  }
+  async forgetFile(job: string) {
+    await this.pool.query(`DELETE FROM ${this.namespace}.catalog_files WHERE job=$1`, [job]);
+  }
+  async sets(project: string): Promise<DocumentSet[]> {
+    await this.ready();
+    return (await this.pool.query(`SELECT * FROM ${this.namespace}.document_sets WHERE project=$1 ORDER BY name,id`, [project])).rows;
+  }
+  async addSet(project: string, name: string, requirements: Requirement[]) {
+    await this.ready();
+    await this.pool.query(`INSERT INTO ${this.namespace}.document_sets (id,project,name,requirements) VALUES ($1,$2,$3,$4)`, [randomUUID(),project,name,JSON.stringify(requirements)]);
+  }
+  async confirm(project: string, id: string, position: number, card: string | null) {
+    const result = await this.pool.query(`UPDATE ${this.namespace}.document_sets
+      SET confirmations = CASE WHEN $4::text IS NULL THEN confirmations - $3::text
+        ELSE jsonb_set(confirmations, ARRAY[$3::text], to_jsonb($4::text)) END
+      WHERE project=$1 AND id=$2 AND jsonb_array_length(requirements)>$3::integer`, [project,id,String(position),card]);
+    return result.rowCount === 1;
   }
   async close(): Promise<void> { await this.initialized.catch(() => {}); await this.pool.end(); }
 }

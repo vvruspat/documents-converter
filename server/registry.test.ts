@@ -4,12 +4,26 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import ExcelJS from 'exceljs';
 import sharp from 'sharp';
+import { PDFDocument } from 'pdf-lib';
+import { locate, fieldLines } from '../shared/scan.js';
 import supertest from 'supertest';
 import { createApp } from './app.js';
 import type { ConversionStore } from './history.js';
 import { RegistryQueue, excelDate, preparePageImage, registryRows } from './registry.js';
+
+async function waitForJob(queue: RegistryQueue, id: string) {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const job = queue.get(id);
+    assert.ok(job);
+    if (job.status === 'done' || job.status === 'error') return job;
+    await delay(100);
+  }
+  assert.fail('Timed out waiting for registry job ' + id + ': ' + queue.get(id)?.status);
+}
 
 test('straightens a sideways scan before OCR and model input', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'registry-orientation-test-'));
@@ -22,6 +36,14 @@ test('straightens a sideways scan before OCR and model input', async () => {
     const metadata = await sharp(prepared.image).metadata();
     assert.ok(metadata.height! > metadata.width!);
     assert.match(prepared.ocr, /Materials register/);
+    assert.deepEqual([prepared.layout.width, prepared.layout.height], [metadata.width, metadata.height]);
+    const words = prepared.layout.words;
+    assert.ok(words.every(w => w.x >= 0 && w.y >= 0 && w.x + w.w <= metadata.width && w.y + w.h <= metadata.height));
+    const range = locate(words, 'Materials register');
+    assert.ok(range);
+    const title = words.slice(range[0], range[1] + 1);
+    assert.equal(fieldLines(title, 'Реестр материалов')[0].text, 'Реестр материалов');
+    assert.equal(locate([...title, ...title], 'Materials register'), undefined);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -37,6 +59,23 @@ test('separates an act from its appendix and fills appendix metadata from the ac
   assert.equal(rows[1].number, 'Приложение № 1');
   assert.equal(rows[1].date, '09.02.2026');
   assert.equal(rows[1].organization, 'ООО «ЗЕТТА»');
+});
+
+test('review follows unreadable fields across pages and ignores blanks and legacy blanket flags', () => {
+  const doc = { name: 'Акт', number: '', date: '', organization: '', uncertain: true };
+  const start = { blank: false, continuesPrevious: false, documents: [doc] };
+  assert.deepEqual(registryRows([start])[0].reviewFields, []);
+  const first = { ...start, documents: [{ ...doc, reviewFields: ['number', 'organization'] as ('number' | 'organization')[] }] };
+  const tail = { blank: false, continuesPrevious: true, documents: [], continuation: { number: '11', date: '12.11.2026', organization: '' } };
+  const [row] = registryRows([first, tail]);
+  assert.deepEqual(row.reviewFields, ['organization']);
+  assert.equal(row.uncertain, true);
+  assert.equal(registryRows([first, { ...tail, continuation: { ...tail.continuation, organization: 'ООО Строй' } }])[0].uncertain, false);
+  assert.deepEqual(registryRows([{ ...start, documents: [{ ...doc, name: 'Паспорт — [неразборчиво]' }] }])[0].reviewFields, ['name']);
+  assert.deepEqual(registryRows([{ ...start, documents: [] }])[0].reviewFields, ['name']);
+  const [confident] = registryRows([{...start, documents: [{...doc, number:'25'}]}, {...tail, continuation: {...tail.continuation, number:'2?', reviewFields:['number']}}]);
+  assert.equal(confident.number, '25');
+  assert.deepEqual(confident.reviewFields, []);
 });
 
 test('normalizes clear document dates without changing date ranges', () => {
@@ -57,23 +96,28 @@ test('creates a register from scanned PDF pages and persists the completed resul
     const payload = JSON.parse(String(init?.body));
     const page = Number(payload.messages[1].content[0].text.match(/PDF page (\d+)/)[1]);
     const data = page === 1
-      ? { blank: false, continuesPrevious: false, continuation: { number: '', date: '', organization: '' }, documents: [{ name: 'Паспорт изделия', number: 'ЕАЭС RU C-RU.001', date: '', organization: 'ООО Строй', uncertain: true }] }
-      : { blank: false, continuesPrevious: true, continuation: { number: '059880', date: '26.03.2026', organization: 'ООО Гладиум' }, documents: [] };
+      ? { blank: false, continuesPrevious: false, continuation: { number: '', date: '', organization: '' }, documents: [{ name: 'Паспорт изделия', number: 'ЕАЭС RU C-RU.001', date: '', organization: 'ООО Строй', reviewFields: ['organization'] }] }
+      : { blank: false, continuesPrevious: true, continuation: { number: '059880', date: '26.03.2026', organization: 'ООО Гладиум', reviewFields: ['organization'] }, documents: [] };
     return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(data) } }] }), { status: 200 });
   };
   try {
     const queue = new RegistryQueue({ directory, apiKey: 'test', model: 'test', fetcher: fetcher as typeof fetch });
     const created = await queue.create(source, 'Скан.pdf');
     assert.equal(created.pages, 2);
-    let job = queue.get(created.id);
-    for (let attempt = 0; attempt < 100 && job?.status !== 'done' && job?.status !== 'error'; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      job = queue.get(created.id);
-    }
+    const job = await waitForJob(queue, created.id);
     assert.equal(job?.status, 'done', job?.error);
     assert.equal(job.recordCount, 1);
     assert.equal(job.processedPages, 2);
     assert.equal(requests, 2);
+    const dir = path.dirname(queue.sourcePath(created.id));
+    const pdf = await PDFDocument.load(await readFile(path.join(dir, 'documents/0.pdf')));
+    const original = await PDFDocument.load(await readFile(fixture));
+    assert.equal(pdf.getPageCount(), original.getPageCount());
+    for (const [index, page] of pdf.getPages().entries()) {
+      assert.ok(Math.abs(page.getWidth() - original.getPage(index).getWidth()) < 0.001);
+      assert.ok(Math.abs(page.getHeight() - original.getPage(index).getHeight()) < 0.001);
+    }
+    assert.equal(pdf.getTitle(), 'Паспорт изделия');
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(await readFile(queue.resultPath(created.id)));
     const sheet = workbook.worksheets[0];
@@ -83,6 +127,8 @@ test('creates a register from scanned PDF pages and persists the completed resul
     assert.ok(sheet.getCell('D8').value instanceof Date);
     assert.equal(sheet.getCell('D8').numFmt, 'dd.mm.yyyy');
     assert.equal(sheet.getCell('E8').value, 'ООО Гладиум');
+    assert.equal((sheet.getCell('E8').fill as ExcelJS.FillPattern).fgColor?.argb, 'FFFFF0C2');
+    for (const col of ['B', 'C', 'D']) assert.notEqual((sheet.getCell(col+'8').fill as ExcelJS.FillPattern)?.fgColor?.argb, 'FFFFF0C2');
     assert.equal(sheet.getCell('F8').value, 2);
     assert.equal(sheet.getCell('G8').value, 1);
     assert.equal(sheet.getCell('I8').value, 2);
@@ -99,9 +145,7 @@ test('creates a register from scanned PDF pages and persists the completed resul
     assert.equal(requests, 2);
     const recreated = await restarted.reprocess(created.id);
     assert.notEqual(recreated.id, created.id);
-    for (let attempt = 0; attempt < 100 && restarted.get(recreated.id)?.status !== 'done'; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    await waitForJob(restarted, recreated.id);
     assert.equal(restarted.get(recreated.id)?.status, 'done');
     assert.equal(requests, 4);
     assert.equal(restarted.get(created.id)?.status, 'done');
@@ -125,12 +169,12 @@ test('retry keeps recognized pages and continues after an upstream error', async
   try {
     const queue = new RegistryQueue({ directory, apiKey: 'test', model: 'test', fetcher });
     const created = await queue.create(source, 'Скан.pdf');
-    for (let attempt = 0; attempt < 100 && queue.get(created.id)?.status !== 'error'; attempt++) await new Promise(resolve => setTimeout(resolve, 100));
+    await waitForJob(queue, created.id);
     assert.equal(queue.get(created.id)?.status, 'error');
     assert.equal(queue.get(created.id)?.processedPages, 1);
     failSecondPage = false;
     await queue.retry(created.id);
-    for (let attempt = 0; attempt < 100 && queue.get(created.id)?.status !== 'done'; attempt++) await new Promise(resolve => setTimeout(resolve, 100));
+    await waitForJob(queue, created.id);
     assert.equal(queue.get(created.id)?.status, 'done');
     assert.deepEqual(seen, [1, 2, 2]);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -147,14 +191,95 @@ test('accepts a PDF larger than the ordinary converter limit', async () => {
     const response = await supertest(app).post('/api/registry').attach('pdf', source);
     assert.equal(response.status, 202, response.text);
     assert.equal(response.body.job.pages, 2);
-    let job = queue.get(response.body.job.id);
-    for (let attempt = 0; attempt < 100 && job?.status !== 'done' && job?.status !== 'error'; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      job = queue.get(response.body.job.id);
-    }
+    const job = await waitForJob(queue, response.body.job.id);
     assert.equal(job?.status, 'done', job?.error);
     const result = await supertest(app).get(`/api/registry/${job.id}/result`);
     assert.equal(result.status, 200);
     assert.match(result.headers['content-type'], /spreadsheetml/);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('reads individual cropped regions, isolates documents sharing a page and retries failed crops independently', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'registry-regions-'));
+  const source = path.join(directory, 'input.pdf');
+  const doc = {name:'Сертификат', number:'42', date:'', organization:'', reviewFields:[]};
+  const seal = {kind:'seal',left:100,top:300,right:300,bottom:450};
+  const secondSeal = {...seal,left:600,right:800};
+  const stamp = {...seal,kind:'stamp',top:460,bottom:520};
+  const detected = [{...seal,document:0},{...secondSeal,document:0},{...stamp,document:1}];
+  let pageCalls = 0, cropCalls = 0, failStamp = true;
+  const dimensions: number[][] = [];
+  const inputs: string[] = [];
+  const initial = {recognition:'test/pages',chat:'test/chat',regions:'test/crop'};
+  const alternate = {recognition:'test/pages-next',chat:'test/chat-next',regions:'test/crop-next:free'};
+  let queue: RegistryQueue;
+  const fetcher: typeof fetch = async (_url,init) => {
+    const body = JSON.parse(String(init?.body));
+    let data;
+    if (body.response_format.json_schema.name === 'registry_page') {
+      pageCalls++;
+      assert.equal(body.model,initial.recognition);
+      if (pageCalls === 1) await queue.models.save(alternate);
+      data = {blank:pageCalls===2,continuesPrevious:false,documents:pageCalls===1?[doc,doc]:[],
+        regions:pageCalls===1?[...detected,detected[0],{...seal,document:999},{...seal,document:0,right:-5}]:[]};
+    } else {
+      cropCalls++;
+      assert.equal(body.model,cropCalls <= 5 ? initial.regions : alternate.regions);
+      const content = body.messages[1].content;
+      assert.equal(content.length,1);
+      inputs.push(content[0].image_url.url);
+      const bytes = Buffer.from(content[0].image_url.url.split(',')[1],'base64');
+      const meta = await sharp(bytes).metadata();
+      assert.equal(meta.format,'png');
+      dimensions.push([meta.width,meta.height]);
+      if (failStamp && body.messages[0].content.includes('stamp imprint')) return new Response('',{status:503});
+      data = {status:'partial',text:'ООО [неразборчиво]'};
+    }
+    return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify(data)}}]});
+  };
+  try {
+    await copyFile(path.resolve('server/fixtures/scanned-two-pages.pdf'),source);
+    queue = new RegistryQueue({directory,model:'page-model',regionModel:'crop-model',apiKey:'test',fetcher});
+    await queue.models.save(initial);
+    const job = await queue.create(source,'Том.pdf');
+    await waitForJob(queue, job.id);
+    assert.equal(queue.get(job.id)?.status,'done',queue.get(job.id)?.error);
+    assert.equal(pageCalls,2);
+    assert.equal(cropCalls,3);
+    const app = createApp({historyStore:{catalogFiles:async()=>[]} as unknown as ConversionStore,registryQueue:queue,model:'page-model',regionModel:'crop-model',apiKey:'test',production:false,password:'',sessionSecret:''},fetcher);
+    const base='/api/registry/'+job.id+'/documents/';
+    const {body:layout}=await supertest(app).get(base+'0/layout?page=1').expect(200);
+    assert.equal(layout.regions.length,2);
+    assert.notEqual(layout.regions[0].id,layout.regions[1].id);
+    assert.equal(layout.regions[0].text,'ООО [неразборчиво]');
+    const png = await supertest(app).get(base+'0/image?page=1&region='+layout.regions[0].id).expect(200);
+    assert.equal((await sharp(png.body).metadata()).width, dimensions[0][0]);
+    assert.deepEqual(dimensions[0],[Math.ceil(layout.width*2*.3)-Math.floor(layout.width*2*.1),Math.ceil(layout.height*2*.45)-Math.floor(layout.height*2*.3)]);
+    assert.equal((await supertest(app).get(base+'1/layout?page=1')).body.regions[0].status,'error');
+    await supertest(app).post(base+'0/regions?page=2').send(seal).expect(404);
+    await supertest(app).post(base+'0/regions?page=1').send({...seal,right:50}).expect(400);
+    await queue.models.save(initial);
+    failStamp=false;
+    const retry=await supertest(app).post(base+'1/regions?page=1').send(stamp).expect(200);
+    assert.equal(retry.body.region.status,'partial');
+    assert.equal(retry.body.region.source,'auto');
+    const manual={...stamp,kind:'handwriting'};
+    const [a,b]=await Promise.all([1,2].map(()=>supertest(app).post(base+'1/regions?page=1').send(manual).expect(200)));
+    assert.equal(a.body.region.id,b.body.region.id);
+    assert.equal(a.body.region.source,'manual');
+    assert.equal(cropCalls,5);
+    assert.equal((await supertest(app).get(base+'1/layout?page=1')).body.regions.length,2);
+    await supertest(app).post(base+'1/regions?page=1').send(manual).expect(200);
+    assert.equal(cropCalls,5);
+    await supertest(app).put('/api/settings/models').send(alternate).expect(200);
+    const switched = await supertest(app).post(base+'1/regions?page=1').send(manual).expect(200);
+    assert.equal(switched.body.region.model,alternate.regions);
+    assert.equal(switched.body.region.previous[0].model,initial.regions);
+    assert.equal(inputs[4],inputs[5]);
+    await supertest(app).put('/api/settings/models').send(initial).expect(200);
+    const cached = await supertest(app).post(base+'1/regions?page=1').send(manual).expect(200);
+    assert.equal(cached.body.region.model,initial.regions);
+    assert.equal(cached.body.region.previous[0].model,alternate.regions);
+    assert.equal(cropCalls,6);
+  } finally { await rm(directory,{recursive:true,force:true}); }
 });

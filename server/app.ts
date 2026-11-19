@@ -1,3 +1,4 @@
+import { installCatalog, projectName } from './catalog-api.js';
 import express from 'express';
 import multer from 'multer';
 import helmet from 'helmet';
@@ -15,14 +16,14 @@ import { exportExcel } from './excel.js';
 import { ConversionStore, safeFilename } from './history.js';
 import { RegistryQueue } from './registry.js';
 
-export type AppConfig = { apiKey: string; model: string; password: string; sessionSecret: string; production: boolean; trustProxy?: number; commit?: string; dataDir?: string; databaseUrl?: string; historyStore?: ConversionStore; registryQueue?: RegistryQueue };
+export type AppConfig = { apiKey: string; model: string; regionModel?: string; password: string; sessionSecret: string; production: boolean; trustProxy?: number; commit?: string; dataDir?: string; databaseUrl?: string; historyStore?: ConversionStore; registryQueue?: RegistryQueue };
 
 export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   const app = express();
   if (config.production && (config.password.length < 6 || config.sessionSecret.length < 32)) throw new Error('Production requires APP_PASSWORD (at least 6 characters) and SESSION_SECRET (at least 32 characters).');
   const history = config.historyStore ?? new ConversionStore({ directory: config.dataDir ?? path.resolve('.local/data'), connectionString: config.databaseUrl ?? '' });
   app.locals.conversionStore = history;
-  const registry = config.registryQueue ?? new RegistryQueue({ directory: config.dataDir ?? path.resolve('.local/data'), apiKey: config.apiKey, model: config.model, fetcher });
+  const registry = config.registryQueue ?? new RegistryQueue({ directory: config.dataDir ?? path.resolve('.local/data'), apiKey: config.apiKey, model: config.model, regionModel: config.regionModel, fetcher });
   app.locals.registryQueue = registry;
   let activeRecognitions = 0;
   app.disable('x-powered-by');
@@ -75,7 +76,10 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   });
   app.post('/api/logout', (_req, res) => { res.clearCookie('dc_session', { path: '/', httpOnly: true, secure: config.production, sameSite: 'strict' }); res.json({ ok: true }); });
   app.use('/api', (req, res, next) => { if (!authenticated(req)) { res.status(401).json({ error: 'Войдите в сервис, чтобы продолжить.' }); return; } next(); });
-  app.get('/api/config', (_req, res) => { res.json({ configured: Boolean(config.apiKey), model: config.model, maxFileBytes: MAX_FILE_BYTES, maxPdfPages: MAX_PDF_PAGES, supportedMimeTypes: [...IMAGE_MIMES, 'application/pdf'] }); });
+  installCatalog(app, registry, history, config, fetcher);
+  app.get('/api/settings/models', async (_req, res) => { res.json(await registry.models.get()); });
+  app.put('/api/settings/models', async (req, res) => { res.json(await registry.models.save(req.body)); });
+  app.get('/api/config', async (_req, res) => { res.json({ configured: Boolean(config.apiKey), model: (await registry.models.get()).recognition, maxFileBytes: MAX_FILE_BYTES, maxPdfPages: MAX_PDF_PAGES, supportedMimeTypes: [...IMAGE_MIMES, 'application/pdf'] }); });
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_BYTES, files: 1, fields: 0, parts: 1 } });
   const registryUpload = multer({ storage: multer.diskStorage({ destination: registry.uploadDirectory, filename: (_req, _file, callback) => callback(null, `${randomUUID()}.upload`) }), limits: { files: 1, fields: 0, parts: 1 } });
   app.post('/api/recognize', rateLimit({ windowMs: 10 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Достигнут лимит: 20 распознаваний за 10 минут. Подождите немного.' } }), (req, _res, next) => {
@@ -87,9 +91,10 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
     if (activeRecognitions >= 2) throw new UserError('Сервер уже обрабатывает два документа. Повторите чуть позже.', 429);
     activeRecognitions++;
     try {
+      const {recognition} = await registry.models.get();
       const document = pdf
-        ? await recognizePdf(req.file.buffer, safeFilename(req.file.originalname), config.apiKey, config.model, fetcher)
-        : await recognizeImage(await normalizeImage(req.file.buffer), config.apiKey, config.model, fetcher);
+        ? await recognizePdf(req.file.buffer, safeFilename(req.file.originalname), config.apiKey, recognition, fetcher)
+        : await recognizeImage(await normalizeImage(req.file.buffer), config.apiKey, recognition, fetcher);
       if (!document.tables.length) throw new UserError(document.warnings[0] || 'В документе не найдено таблиц.', 422);
       const input = exportSchema.parse({ documents: [{ name: safeFilename(req.file.originalname), document }] });
       const result = await exportExcel(input);
@@ -103,7 +108,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
     if (!req.file) throw new UserError('Выберите PDF с документами.');
     try {
       if (!isPdfUpload(req.file.mimetype, req.file.originalname)) throw new UserError('Для реестра нужен PDF.');
-      const job = await registry.create(req.file.path, req.file.originalname);
+      const job = await registry.create(req.file.path, req.file.originalname, projectName(req.query.project));
       res.status(202).json({ job });
     } finally { await rm(req.file.path, { force: true }); }
   });
@@ -118,12 +123,13 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
     const job = registry.get(String(req.params.id));
     if (!job) throw new UserError('Реестр не найден.', 404);
     if (job.status !== 'done') throw new UserError('Реестр ещё не готов.', 409);
-    res.download(registry.resultPath(job.id), job.resultName, error => { if (error && !res.headersSent) next(new UserError('Файл не найден.', 404)); });
+    res.download(await registry.downloadPath(job), job.resultName, { dotfiles: 'allow' }, error => { if (error && !res.headersSent) next(new UserError('Файл не найден.', 404)); });
   });
   app.post('/api/registry/:id/retry', async (req, res) => { res.json({ job: await registry.retry(String(req.params.id)) }); });
   app.post('/api/registry/:id/reprocess', rateLimit({ windowMs: 10 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Слишком много повторных обработок. Повторите через 10 минут.' } }), async (req, res) => { res.status(202).json({ job: await registry.reprocess(String(req.params.id)) }); });
   app.delete('/api/registry/:id', async (req, res) => {
     if (!await registry.delete(String(req.params.id))) throw new UserError('Реестр не найден.', 404);
+    await history.forgetFile(String(req.params.id));
     res.json({ ok: true });
   });
   app.get('/api/history', async (req, res) => {

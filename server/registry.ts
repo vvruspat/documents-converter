@@ -1,25 +1,45 @@
+import { ModelSettings } from './models.js';
+import { detectedRegion, detectionFormat, recognizeRegion, regionBox } from './regions.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
-import { link, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, link, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import ExcelJS from 'exceljs';
-import sharp from 'sharp';
+import { pageText, scanPage, saveDocument } from './scan.js';
+export { preparePageImage } from './scan.js';
+import { fieldLabels, type Field, type ScanLayout } from '../shared/scan.js';
 import { z } from 'zod';
+import { fieldsToReview, unreadableText, kinds, type CatalogRow } from '../shared/catalog.js';
 import { safeFilename } from './history.js';
 import { UserError } from './recognize.js';
 
 const run = promisify(execFile);
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const catalogFields = z.object({
+  kind: z.enum(kinds), material: z.string().max(500), batch: z.string().max(200),
+  work: z.string().max(500), floor: z.string().max(120), section: z.string().max(120),
+});
+const fieldNames = z.enum(Object.keys(fieldLabels) as [Field, ...Field[]]);
+const continuationFields = ['number', 'date', 'organization'] as const;
 const documentSchema = z.object({
   name: z.string().max(500), number: z.string().max(200), date: z.string().max(120),
-  organization: z.string().max(300), uncertain: z.boolean(), attachmentOfPrevious: z.boolean().optional(),
+  organization: z.string().max(300), uncertain: z.boolean().optional(), reviewFields: z.array(fieldNames).optional(), catalog: catalogFields.optional(), attachmentOfPrevious: z.boolean().optional(),
 }).strict();
 const continuationSchema = z.object({
+  reviewFields: z.array(z.enum(continuationFields)).optional(),
   number: z.string().max(200), date: z.string().max(120), organization: z.string().max(300),
 }).strict();
+const evidenceSchema = z.object({
+  document: z.number().int().min(-1), field: z.enum(['name','number','date','organization','material','batch','work','floor','section']), quote: z.string().max(500),
+});
 const pageSchema = z.object({
+  regions: z.array(z.unknown()).transform(items => items.flatMap(item => {
+    const parsed = detectedRegion.safeParse(item);
+    return parsed.success && regionBox.safeParse(parsed.data).success ? [parsed.data] : [];
+  })).optional(),
+  evidence: z.array(evidenceSchema).optional(),
   blank: z.boolean(),
   continuesPrevious: z.boolean(),
   object: z.string().max(500).optional(),
@@ -29,10 +49,10 @@ const pageSchema = z.object({
 }).strict();
 type PageResult = z.infer<typeof pageSchema>;
 export type RegistryJob = {
-  id: string; originalName: string; resultName: string; status: 'queued' | 'working' | 'done' | 'error';
+  id: string; project?: string; models?: {recognition: string; regions: string}; originalName: string; resultName: string; status: 'queued' | 'working' | 'done' | 'error';
   pages: number; processedPages: number; recordCount: number; createdAt: string; error?: string;
 };
-type RegistryRow = { name: string; number: string; date: string; organization: string; first: number; last: number; uncertain: boolean };
+type RegistryRow = { name: string; number: string; date: string; organization: string; first: number; last: number; uncertain: boolean; reviewFields: Field[] };
 
 export function excelDate(value: string): Date | string {
   const trimmed = value.trim();
@@ -54,20 +74,25 @@ Identify each distinct document that STARTS on this page: acts, material registe
 Set continuesPrevious=true only if this page is physically part of the previous document. When this page visibly starts a new document, continuesPrevious is normally false even if it is mentioned in the previous document. Set blank=true only if the page has no meaningful document content.
 For each new document return a precise Russian title. For an act of concealed works, include the actual work from "К освидетельствованию предъявлены следующие работы" in the name. For a material certificate or passport, include the product or material when legible. The name "Акт освидетельствования скрытых работ" alone is insufficient if the work is visible. Set attachmentOfPrevious=true only for an explicit appendix to the preceding act, such as "Приложение № 1 к АОСР"; the appendix starts its own register row and does not extend the preceding act's page range.
 Return the document's OWN number, issue date and issuing organization. For a certificate use the full "Регистрационный номер", not a short printed blank number in the corner. For a passport use "Паспорт изделия №" or "Шильд №", which may be on its last page. For an act use the contractor named as the performer of the works ("лицо, выполнившее работы" or "составили настоящий акт"), not the customer, designer or construction supervisor. For a signed materials register use its own "Приложение №" and the signing organization. Do not substitute a certificate number, standard, drawing reference or date merely cited in a document's body.
-If the document continues from the preceding page, put its OWN number, issue date and issuer found on THIS page in continuation; otherwise leave continuation fields empty. These fields supplement the preceding document, not a new row. For date use DD.MM.YYYY when the issue date is unambiguous; keep validity periods as text "с DD.MM.YYYY по DD.MM.YYYY". Preserve Cyrillic, original numbering, meaningful subject, product model and location. Use an empty string when a field is absent or unreadable, and uncertain=true if any field is unclear. Do not invent missing facts.
-On the first page set object to the construction project name from the PDF heading and section to the work or section named in the first document; otherwise use empty strings. Return only JSON.`;
+If the document continues from the preceding page, put its OWN number, issue date and issuer found on THIS page in continuation; otherwise leave continuation fields empty. These fields supplement the preceding document, not a new row. For date use DD.MM.YYYY when the issue date is unambiguous; keep validity periods as text "с DD.MM.YYYY по DD.MM.YYYY". Preserve Cyrillic, original numbering, meaningful subject, product model and location. In reviewFields list ONLY individual fields visibly present whose value is unreadable, partially legible or has competing plausible readings. Keep the legible part or an empty string. Use [] when nothing needs checking. An absent field, an inapplicable field, a missing OCR match, or a value expected on a later page is not a recognition failure. Apply the same rules to continuation. For an unreadable value, include a short visible quote or adjacent field label in evidence if available. Do not invent missing facts.
+For catalog, classify the document by kind. Extract its material, batch identifier, work, floor and section only when explicitly stated for this document. Use empty strings for unknown values. On the first page set object to the construction project name from the PDF heading and section to the work or section named in the first document; otherwise use empty strings. For each catalog field you can ground on THIS page, add evidence with document (zero-based index in documents; -1 for continuation), field and a short verbatim quote at the correct location. Choose just the text for that field. Omit unsupported evidence. In regions locate individual organization seals (seal), rectangular text stamps (stamp) and handwritten text blocks (handwriting). Exclude signature flourishes alone, printed paragraphs and blank fields. Return a separate snug box around each complete imprint or handwriting block with a small margin, even if two overlap. Use integer coordinates left,top,right,bottom from 0 to 1000 relative to this upright image, origin top left. Set document to the zero-based index of its owner in documents, or -1 for the previous document continuing on this page. Omit regions of unknown ownership. Return [] if none. Return only JSON.`;
 const responseSchema = {
-  type: 'object', additionalProperties: false, required: ['blank', 'continuesPrevious', 'object', 'section', 'continuation', 'documents'],
+  type: 'object', additionalProperties: false, required: ['blank', 'continuesPrevious', 'object', 'section', 'continuation', 'documents', 'evidence', 'regions'],
   properties: {
+    regions: detectionFormat,
+    evidence: { type:'array', items:{ type:'object', additionalProperties:false, required:['document','field','quote'], properties:{
+      document:{type:'integer'}, field:{type:'string',enum:evidenceSchema.shape.field.options}, quote:{type:'string'} } } },
     blank: { type: 'boolean' }, continuesPrevious: { type: 'boolean' },
     object: { type: 'string' }, section: { type: 'string' },
     continuation: { type: 'object', additionalProperties: false,
-      required: ['number', 'date', 'organization'],
-      properties: { number: { type: 'string' }, date: { type: 'string' }, organization: { type: 'string' } } },
+      required: ['number', 'date', 'organization', 'reviewFields'],
+      properties: { reviewFields: {type:'array',items:{type:'string',enum:continuationFields}}, number: { type: 'string' }, date: { type: 'string' }, organization: { type: 'string' } } },
     documents: { type: 'array', items: { type: 'object', additionalProperties: false,
-      required: ['name', 'number', 'date', 'organization', 'uncertain', 'attachmentOfPrevious'],
-      properties: { name: { type: 'string' }, number: { type: 'string' }, date: { type: 'string' },
-        organization: { type: 'string' }, uncertain: { type: 'boolean' }, attachmentOfPrevious: { type: 'boolean' } },
+      required: ['name', 'number', 'date', 'organization', 'reviewFields', 'attachmentOfPrevious', 'catalog'],
+      properties: { catalog: { type: 'object', additionalProperties: false, required: Object.keys(catalogFields.shape),
+        properties: { kind: { type: 'string', enum: kinds }, ...Object.fromEntries(['material','batch','work','floor','section'].map(key => [key, { type: 'string' }])) } },
+        name: { type: 'string' }, number: { type: 'string' }, date: { type: 'string' },
+        organization: { type: 'string' }, reviewFields: {type:'array',items:{type:'string',enum:fieldNames.options}}, attachmentOfPrevious: { type: 'boolean' } },
     } },
   },
 };
@@ -82,39 +107,6 @@ async function pdfPages(filename: string): Promise<number> {
   } catch (error) {
     if (error instanceof UserError) throw error;
     throw new UserError('Не удалось прочитать PDF. Проверьте, что файл не повреждён и не защищён паролем.');
-  }
-}
-
-export async function preparePageImage(target: string): Promise<{ image: Buffer; ocr: string }> {
-  let image = await readFile(target);
-  try {
-    const { stdout } = await run('tesseract', [target, 'stdout', '--psm', '0'], { timeout: 30_000, maxBuffer: 256_000 });
-    const angle = Number(stdout.match(/^Rotate:\s*(0|90|180|270)/m)?.[1] ?? 0);
-    const confidence = Number(stdout.match(/^Orientation confidence:\s*([\d.]+)/m)?.[1] ?? 0);
-    if (angle && confidence >= 2.5) {
-      image = await sharp(image).rotate(angle).jpeg({ quality: 90 }).toBuffer();
-      await writeFile(target, image);
-    }
-  } catch { /* Sparse scans may have no detectable orientation. */ }
-  let ocr = '';
-  try {
-    const result = await run('tesseract', [target, 'stdout', '-l', 'rus+eng', '--psm', '3'], { timeout: 60_000, maxBuffer: 1_000_000 });
-    const content = result.stdout.trim();
-    ocr = content.length > 12_000 ? `${content.slice(0, 6_000)}\n…\n${content.slice(-6_000)}` : content;
-  } catch { /* The page image remains the authoritative source. */ }
-  return { image, ocr };
-}
-
-async function renderPage(source: string, page: number, target: string): Promise<{ image: Buffer; ocr: string }> {
-  const prefix = target.replace(/\.jpg$/, '');
-  try {
-    await run('pdftoppm', ['-f', String(page), '-l', String(page), '-singlefile', '-scale-to', '2200', '-jpeg', '-jpegopt', 'quality=85', source, prefix],
-      { timeout: 120_000, maxBuffer: 256_000 });
-    return await preparePageImage(target);
-  } catch {
-    throw new UserError(`Не удалось прочитать страницу ${page} PDF.`, 422);
-  } finally {
-    await rm(target, { force: true });
   }
 }
 
@@ -165,30 +157,43 @@ export function registryRows(pages: PageResult[]): RegistryRow[] {
     if (result.blank && !result.documents.length && !result.continuesPrevious) continue;
     if (result.continuesPrevious && rows.length) {
       const previous = rows[rows.length - 1];
-      if (!result.documents.length) previous.last = page;
+      if (!result.documents.length || result.documents.every(doc => !doc.attachmentOfPrevious)) previous.last = page;
       if (result.continuation) {
         // A document's own serial number or issue date can appear only on its final page.
-        for (const field of ['number', 'date', 'organization'] as const) {
+        const reported = result.continuation.reviewFields ?? [];
+        for (const field of continuationFields) {
           const value = result.continuation[field].trim();
+          const suspect = reported.includes(field) || unreadableText(value);
+          if (suspect && previous[field] && !previous.reviewFields.includes(field)) continue;
           if (value) previous[field] = value;
+          if (value || suspect) {
+            previous.reviewFields = previous.reviewFields.filter(key => key !== field);
+            if (suspect) previous.reviewFields.push(field);
+          }
         }
       }
-      previous.uncertain ||= !previous.number || !previous.date || !previous.organization;
     }
     for (const document of result.documents) {
       const name = document.name.trim() || 'Документ — требуется проверка';
       const parent = document.attachmentOfPrevious ? rows.at(-1) : undefined;
       const number = document.number.trim() === parent?.number ? '' : document.number.trim();
-      const date = document.date.trim() || parent?.date || '';
-      const organization = document.organization.trim() || parent?.organization || '';
+      const reported = [...(document.reviewFields ?? [])];
+      const inherited = (key: 'date' | 'organization') => {
+        if (document[key].trim() || reported.includes(key)) return document[key].trim();
+        if (parent?.reviewFields.includes(key)) reported.push(key);
+        return parent?.[key] ?? '';
+      };
+      const date = inherited('date');
+      const organization = inherited('organization');
       rows.push({ name, number, date, organization,
-        first: page, last: page, uncertain: document.uncertain || !document.name.trim() || !number || !date || !organization });
+        first: page, last: page, uncertain: false, reviewFields: fieldsToReview({ ...document.catalog, name, number, date, organization }, reported) });
     }
     if (!result.continuesPrevious && !result.documents.length) {
       rows.push({ name: 'Документ — требуется проверка', number: '', date: '',
-        organization: '', first: page, last: page, uncertain: true });
+        organization: '', first: page, last: page, uncertain: true, reviewFields: ['name'] });
     }
   }
+  for (const row of rows) row.uncertain = row.reviewFields.length > 0;
   return rows;
 }
 
@@ -250,7 +255,8 @@ async function writeRegistry(filename: string, sourceName: string, pages: PageRe
       cell.font = { name: Number(cell.col) === 2 || Number(cell.col) === 5 ? 'Aptos Narrow' : 'Times New Roman', size: 12, bold: Number(cell.col) === 2, color: { argb: 'FF000000' } };
       cell.alignment = { wrapText: true, vertical: 'middle', horizontal: [2, 5].includes(Number(cell.col)) ? 'left' : 'center' };
       cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
-      if (record.uncertain && [2, 3, 4, 5].includes(Number(cell.col))) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF0C2' } };
+      const field = (['name', 'number', 'date', 'organization'] as const)[Number(cell.col) - 2];
+      if (field && record.reviewFields.includes(field)) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF0C2' } };
     });
     line.commit(); sheetRows++;
   }
@@ -260,12 +266,14 @@ async function writeRegistry(filename: string, sourceName: string, pages: PageRe
 }
 
 export class RegistryQueue {
+  readonly models: ModelSettings;
   readonly uploadDirectory: string;
   readonly ready: Promise<void>;
   private directory: string;
   private jobs = new Map<string, RegistryJob>();
   private running = false;
-  constructor(private options: { directory: string; apiKey: string; model: string; fetcher?: typeof fetch }) {
+  constructor(private options: { directory: string; apiKey: string; model: string; regionModel?: string; fetcher?: typeof fetch }) {
+    this.models = new ModelSettings(options.directory, { recognition: options.model, chat: options.model, regions: options.regionModel || options.model });
     this.directory = path.join(path.resolve(options.directory), 'registry-jobs');
     this.uploadDirectory = path.join(this.directory, 'uploads');
     mkdirSync(this.uploadDirectory, { recursive: true, mode: 0o700 });
@@ -292,13 +300,79 @@ export class RegistryQueue {
   }
   list() { return [...this.jobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(job => ({ ...job })); }
   get(id: string) { return idPattern.test(id) ? this.jobs.get(id) : undefined; }
-  resultPath(id: string) { if (!idPattern.test(id)) throw new UserError('Реестр не найден.', 404); return path.join(this.jobDir(id), 'result.xlsx'); }
-  async create(uploadPath: string, originalName: string): Promise<RegistryJob> {
+  resultPath(id: string) { if (!idPattern.test(id)) throw new UserError('Реестр не найден.', 404); return path.join(this.jobDir(id), 'result.review.xlsx'); }
+  sourcePath(id: string) {
+    if (!this.get(id)) throw new UserError('Исходный PDF не найден.', 404);
+    return path.join(this.jobDir(id), 'source.pdf');
+  }
+  async pageTexts(job: RegistryJob) {
+    const texts: string[] = [];
+    for (let page = 1; page <= job.pages; page++) {
+      try { texts.push(await readFile(path.join(this.jobDir(job.id), 'pages', page + '.txt'), 'utf8')); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; texts.push(''); }
+    }
+    return texts;
+  }
+  async evidence(id: string, page: number, document: number) {
+    const result = pageSchema.parse(JSON.parse(await readFile(path.join(this.jobDir(id),'pages',page + '.json'),'utf8')));
+    return (result.evidence ?? []).filter(e => e.document === document);
+  }
+  async excerpt(id: string, first: number, last: number) {
+    if (!this.get(id)) return '';
+    const texts = [];
+    for (const page of new Set([first, last])) {
+      try { texts.push((await readFile(path.join(this.jobDir(id), 'pages', page + '.txt'), 'utf8')).slice(0, 3000)); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
+    return texts.join('\n');
+  }
+  private async savedPages(job: RegistryJob) {
+    const pages: PageResult[] = [];
+    for (let i = 1; i <= job.pages; i++) {
+      pages.push(pageSchema.parse(JSON.parse(await readFile(path.join(this.jobDir(job.id), 'pages', i + '.json'), 'utf8'))));
+    }
+    return pages;
+  }
+  private preparingExports = new Map<string, Promise<string>>();
+  async downloadPath(job: RegistryJob): Promise<string> {
+    const target = this.resultPath(job.id);
+    try { await access(target); return target; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    const pending = this.preparingExports.get(job.id);
+    if (pending) return pending;
+    const build = async () => {
+      const temporary = target + '.' + randomUUID() + '.tmp';
+      try {
+        await writeRegistry(temporary, job.originalName, await this.savedPages(job));
+        await rename(temporary, target);
+        return target;
+      } finally {
+        this.preparingExports.delete(job.id);
+        await rm(temporary, {force:true});
+      }
+    };
+    const task = build();
+    this.preparingExports.set(job.id, task);
+    return task;
+  }
+  async catalogRows(job: RegistryJob): Promise<CatalogRow[]> {
+    const pages = await this.savedPages(job);
+    const offsets = new Map<number, number>();
+    return registryRows(pages).map(row => {
+      const offset = offsets.get(row.first) ?? 0;
+      offsets.set(row.first, offset + 1);
+      const details = pages[row.first - 1].documents[offset]?.catalog;
+      const kind = kinds.find(value => row.name.toLowerCase().startsWith(value.toLowerCase())) ?? 'Другой документ';
+      return { kind, batch: '', material: '', work: '', section: '', floor: '', ...details, ...row };
+    });
+  }
+  async create(uploadPath: string, originalName: string, project = 'Общий'): Promise<RegistryJob> {
     await this.ready;
     if (!this.options.apiKey) throw new UserError('Добавьте OPENROUTER_API_KEY в настройках приложения Coolify.', 503);
     const pages = await pdfPages(uploadPath);
     const id = randomUUID(), name = safeFilename(originalName);
-    const job: RegistryJob = { id, originalName: name, resultName: `${name.replace(/\.pdf$/i, '') || 'Документ'} — реестр.xlsx`,
+    const { recognition, regions } = await this.models.get();
+    const job: RegistryJob = { id, project, models: { recognition, regions }, originalName: name, resultName: `${name.replace(/\.pdf$/i, '') || 'Документ'} — реестр.xlsx`,
       status: 'queued', pages, processedPages: 0, recordCount: 0, createdAt: new Date().toISOString() };
     const dir = this.jobDir(id);
     await mkdir(path.join(dir, 'pages'), { recursive: true, mode: 0o700 });
@@ -326,7 +400,7 @@ export class RegistryQueue {
     const temporary = path.join(this.uploadDirectory, `${randomUUID()}.upload`);
     try {
       await link(path.join(this.jobDir(id), 'source.pdf'), temporary);
-      return await this.create(temporary, sourceJob.originalName);
+      return await this.create(temporary, sourceJob.originalName, sourceJob.project);
     } finally { await rm(temporary, { force: true }); }
   }
   async delete(id: string): Promise<boolean> {
@@ -345,6 +419,7 @@ export class RegistryQueue {
     if (!job) return;
     this.running = true;
     try {
+      if (!job.models) job.models = { recognition:this.options.model, regions:this.options.regionModel || this.options.model };
       job.status = 'working'; await this.save(job);
       await this.process(job);
       job.status = 'done'; delete job.error;
@@ -357,7 +432,7 @@ export class RegistryQueue {
     }
   }
   private async process(job: RegistryJob) {
-    const dir = this.jobDir(job.id), source = path.join(dir, 'source.pdf');
+    const dir = this.jobDir(job.id);
     const pages: PageResult[] = [];
     let previous = '';
     for (let page = 1; page <= job.pages; page++) {
@@ -365,11 +440,21 @@ export class RegistryQueue {
       let result: PageResult;
       try { result = pageSchema.parse(JSON.parse(await readFile(file, 'utf8'))); }
       catch {
-        const { image, ocr } = await renderPage(source, page, path.join(dir, 'page.jpg'));
-        result = await recognizePage(image, ocr, page, previous, this.options.apiKey, this.options.model, this.options.fetcher ?? fetch);
+        const scan = await scanPage(dir,page);
+        const layout: ScanLayout = JSON.parse(await readFile(scan.layout,'utf8'));
+        const image = await readFile(scan.image);
+        const ocr = pageText(layout.words);
+        await writeFile(path.join(dir, 'pages', page + '.txt'), ocr, { mode: 0o600 });
+        result = await recognizePage(image, ocr, page, previous, this.options.apiKey, job.models!.recognition, this.options.fetcher ?? fetch);
         const temp = `${file}.${randomUUID()}.tmp`;
         await writeFile(temp, JSON.stringify(result), { mode: 0o600 });
         await rename(temp, file);
+      }
+      for (const region of result.regions ?? []) {
+        if (region.document === -1 ? !result.continuesPrevious || !previous : region.document >= result.documents.length) continue;
+        await recognizeRegion(dir, page, region.document, region, 'auto', {
+          ...this.options, model: job.models!.regions
+        });
       }
       pages.push(result);
       const latest = result.documents.at(-1);
@@ -377,6 +462,8 @@ export class RegistryQueue {
       job.processedPages = page;
       await this.save(job);
     }
+    const rows = registryRows(pages);
+    for (const [index,row] of rows.entries()) await saveDocument(dir,index,row);
     const resultPath = this.resultPath(job.id), temporary = path.join(dir, 'result.pending.xlsx');
     job.recordCount = await writeRegistry(temporary, job.originalName, pages);
     await rename(temporary, resultPath);

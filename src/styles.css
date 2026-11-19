@@ -4,3 +4,16 @@
 
 .registry-page{max-width:850px;margin:0 auto 60px}.registry-intro{margin-bottom:24px}.registry-intro h1{font-size:25px;font-weight:550;letter-spacing:-.7px;margin:0 0 7px}.registry-intro p,.registry-note{font-size:12px;line-height:1.6;color:var(--muted);margin:0}.registry-dropzone{min-height:235px}.registry-dropzone h2{font-size:18px;font-weight:550;margin:0}.registry-note{margin:14px 0 30px}.registry-list{margin-top:20px}.registry-job .job-body{min-width:0}.registry-job .job-action{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:135px;width:auto}.registry-progress{display:block;width:100%;height:5px;margin-top:9px;accent-color:#4b8450}.registry-page .error-banner{margin-bottom:15px}.registry-page .empty-history{padding:28px 0;text-align:left}.registry-job .job-status{white-space:normal;line-height:1.45}.registry-job .button.compact{white-space:nowrap}
 @media(max-width:700px){.registry-intro h1{font-size:21px}.registry-job .job-action{min-width:90px;flex-wrap:wrap}.registry-dropzone h2{font-size:16px}}
+
+.app-settings { margin-left:auto; display:flex; gap:6px; align-items:center; }
+.model-settings-trigger { display:flex; align-items:center; gap:6px; border:0; background:transparent; color:#52665b; font-size:12px; }
+.model-settings-dialog { width:min(450px,94vw); padding:24px; border:1px solid #cbd6ce; border-radius:12px; color:#213a30; }
+.model-settings-dialog::backdrop { background:#172d2466; }
+.model-settings-dialog form { display:grid; gap:17px; }
+.model-settings-heading,.model-settings-dialog footer { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.model-settings-heading h2 { margin:0; font-size:21px; }
+.model-settings-dialog form label { display:grid; gap:5px; font-size:14px; font-weight:600; }
+.model-settings-dialog input { min-width:0; width:100%; padding:10px; border:1px solid #b9c9bf; border-radius:6px; color:inherit; }
+.model-settings-dialog small,.model-settings-dialog footer span,.reading-model { color:#576b60; font-size:12px; font-weight:400; }
+.reading-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+@media(max-width:700px){.model-settings-trigger span{display:none}.model-settings-trigger{padding:4px}.app>header{column-gap:12px}.app-settings{gap:2px}.model-settings-dialog input{font-size:16px}}
