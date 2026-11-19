@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import { assess, kinds, normalized, type Card, type DocumentSet, type Requirement, type Source } from '../shared/catalog';
+import { DocumentList, SourceLink as Scan } from './DocumentList';
+import { Layers, Plus, Sparkles } from 'lucide-react';
+import { assess, kinds, type Card, type DocumentSet, type Requirement, type Source } from '../shared/catalog';
 
 async function request(path: string, body?: unknown) {
   const response = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -7,12 +9,9 @@ async function request(path: string, body?: unknown) {
   if (!response.ok) throw new Error(data.error || 'Не удалось выполнить запрос.');
   return data;
 }
-function Scan({ source }: { source: Source }) {
-  return <a href={`/api/registry/${source.job}/source#page=${source.first}`} target="_blank" rel="noreferrer">{source.file} · стр. {source.first}{source.last !== source.first && '–' + source.last}</a>;
-}
 const empty = (): Requirement => ({ kind: 'Паспорт', number: '', organization: '', batch: '' });
 type Answer = { text: string; source: Source };
-export function Catalog({ project, revision }: { project: string; revision: string }) {
+export function Catalog({ project, revision, view }: { project: string; revision: string; view: string }) {
   const url = '?project=' + encodeURIComponent(project);
   const [cards, setCards] = useState<Card[]>([]);
   const [sets, setSets] = useState<DocumentSet[]>([]);
@@ -20,8 +19,6 @@ export function Catalog({ project, revision }: { project: string; revision: stri
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [query, setQuery] = useState('');
-  const [limit, setLimit] = useState(40);
   const [question, setQuestion] = useState('');
   const [answers, setAnswers] = useState<Answer[] | null>(null);
   const [draft, setDraft] = useState<Requirement[]>([]);
@@ -43,19 +40,22 @@ export function Catalog({ project, revision }: { project: string; revision: stri
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
-  const filtered = cards.filter(card => normalized([card.name, card.number, card.date, card.organization, card.kind, card.material, card.work, card.batch, card.floor, card.section, ...card.sources.map(s => s.file)].join(' ')).includes(normalized(query)));
   return <section className="catalog">
     {error && <p className="error-banner" role="alert">{error}</p>}
-    <h2>Комплекты документации</h2>
+    <div hidden={view !== 'sets'} className="set-panel">
+    {!draft.length && <div className="set-bar"><span>{loading ? 'Загрузка…' : 'Комплектов: ' + sets.length}</span><button className="accent-control" onClick={() => setDraft([empty()])}><Plus size={15}/> Создать комплект</button></div>}
+    {!loading && !sets.length && !draft.length && <div className="library-empty"><Layers/><p>В проекте пока нет комплектов</p></div>}
     {sets.map(set => {
       const positions = set.requirements.map((req,i) => assess(req, cards, set.confirmations[i]));
-      return <details key={set.id}><summary>{set.name} · найдено {positions.filter(r => ['Найден','Подтверждён'].includes(r.status)).length} из {positions.length}</summary>
-        <ul>{positions.map(({ status, matches }, i) => <li key={i}><b>{status}</b> · {Object.values(set.requirements[i]).filter(Boolean).join(' · ')}
+      const found = positions.filter(r => ['Найден','Подтверждён'].includes(r.status)).length;
+      return <details key={set.id} className="kit-card"><summary><Layers size={19}/><strong>{set.name}</strong><span>{found} из {positions.length}</span></summary><progress value={found} max={positions.length} aria-label="Найденные позиции"/>
+        <div className="kit-breakdown"><span>На проверке <b>{positions.filter(p => p.status === 'На проверку').length}</b></span><span>Отсутствуют <b>{positions.filter(p => p.status === 'Отсутствует').length}</b></span></div>
+        <ul>{positions.map(({ status, matches }, i) => <li key={i}><b className="kit-status" data-status={status}>{status}</b>  {Object.values(set.requirements[i]).filter(Boolean).join(' · ')}
           {matches.map(c => <div key={c.id}>{c.name} · <Scan source={c.sources[0]} /> <button disabled={busy} onClick={() => void submit('/api/catalog/confirm', { id: set.id, position: i, card: status === 'Подтверждён' ? null : c.id })}>{status === 'Подтверждён' ? 'Снять подтверждение' : 'Подтвердить'}</button></div>)}</li>)}</ul>
         <button type="button" onClick={() => { setName(''); setDraft(set.requirements.map(r => ({ ...r }))); }}>Использовать как шаблон</button>
       </details>;
     })}
-    {!draft.length ? <button onClick={() => setDraft([empty()])}>Создать комплект</button> :
+    {draft.length > 0 &&
       <form onSubmit={e => { e.preventDefault(); void submit('/api/catalog/sets', { name, requirements: draft }); }}>
         <label>Название комплекта<input required maxLength={300} placeholder="Монтаж панелей · С2 · этаж 5" value={name} onChange={e => setName(e.target.value)} /></label>
         {draft.map((req, i) => {
@@ -67,19 +67,14 @@ export function Catalog({ project, revision }: { project: string; revision: stri
         <button type="button" onClick={() => setDraft(items => [...items,empty()])}>Добавить позицию</button>
         <button disabled={busy}>Сохранить комплект</button><button type="button" onClick={() => setDraft([])}>Отмена</button>
       </form>}
-    <h2>Документы проекта</h2>
-    <label>Поиск по реквизитам<input value={query} onChange={e => { setQuery(e.target.value); setLimit(40); }} placeholder="Материал, номер, организация" /></label>
-    <p role="status">{loading ? 'Загружаем каталог…' : `Документов: ${filtered.length}`}</p>
-    {filtered.slice(0,limit).map(card => <details key={card.id}><summary>{card.name} {card.number} · {card.date || 'Дата не указана'} {card.uncertain && '· На проверку'}</summary>
-      <p>{[card.organization, card.material, card.batch && 'Партия ' + card.batch, card.work, card.section && 'Секция ' + card.section, card.floor && 'Этаж ' + card.floor].filter(Boolean).join(' · ')}</p>
-      {card.sources.map((source,i) => <div key={i}><Scan source={source} /></div>)}
-    </details>)}
-    {filtered.length > limit && <button onClick={() => setLimit(v => v + 40)}>Показать ещё</button>}
-    <h2>Вопрос по документам</h2>
+    </div>
+    <div hidden={view !== 'catalog'}><DocumentList cards={cards} loading={loading}/></div>
+    <div hidden={view !== 'ask'} className="ask-panel"><Sparkles size={24}/>
     <form onSubmit={e => { e.preventDefault(); setAnswers(null); void submit('/api/catalog/ask', { question }); }}>
-      <label>Вопрос<input required minLength={3} maxLength={1000} value={question} onChange={e => setQuestion(e.target.value)} placeholder="Каким паспортом подтверждена партия 373?" /></label>
-      <button disabled={busy || loading || !cards.length}>Спросить AI</button>
+      <label>О чём найти сведения в документах?<textarea rows={3} required minLength={3} maxLength={1000} value={question} onChange={e => setQuestion(e.target.value)} placeholder="Каким паспортом подтверждена партия 373?" /></label>
+      <button disabled={busy || loading || !cards.length}>{busy ? 'Ищем ответ…' : 'Найти ответ'}</button>
     </form>
     {answers && (answers.length ? answers.map((a,i) => <p key={i}>{a.text} <Scan source={a.source} /></p>) : <p>В найденных документах недостаточно сведений для ответа.</p>)}
+    </div>
   </section>;
 }

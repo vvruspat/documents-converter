@@ -1,3 +1,5 @@
+import './registry.css';
+import { Archive, Building2, ChevronDown, Folder, FolderOpen, Layers, Plus, Sparkles } from 'lucide-react';
 import { Catalog } from './Catalog';
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { Check, Download, FileText, LoaderCircle, RotateCcw, Trash2, Upload } from 'lucide-react';
@@ -18,9 +20,26 @@ async function api(url: string, init?: RequestInit) {
   return response;
 }
 
+const views = [
+  { id: 'catalog', name: 'Документы', icon: FolderOpen },
+  { id: 'sets', name: 'Комплекты', icon: Layers },
+  { id: 'upload', name: 'Загрузки и Excel', icon: Archive },
+  { id: 'ask', name: 'Вопрос по архиву', icon: Sparkles },
+] as const;
+type View = typeof views[number]['id'];
 export function RegistryPage() {
   const [project, setProject] = useState(() => new URLSearchParams(location.search).get('project')?.slice(0,120) || 'Общий');
-  const [tab, setTab] = useState<'upload' | 'catalog'>(() => new URLSearchParams(location.search).get('view') === 'catalog' ? 'catalog' : 'upload');
+  const [tab, setTab] = useState<View>(() => views.find(v => v.id === new URLSearchParams(location.search).get('view'))?.id ?? 'catalog');
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [projectDraft, setProjectDraft] = useState('');
+  const chooseInitialProject = useRef(!new URLSearchParams(location.search).has('project'));
+  function navigate(view: View, target = project) {
+    chooseInitialProject.current = false;
+    setTab(view); setProject(target);
+    const url = new URL(location.href);
+    url.searchParams.set('view', view); url.searchParams.set('project', target);
+    history.replaceState(null, '', url);
+  }
   const selected = project.trim() || 'Общий';
   const input = useRef<HTMLInputElement>(null);
   const [jobs, setJobs] = useState<RegistryJob[]>([]);
@@ -34,6 +53,10 @@ export function RegistryPage() {
     try {
       const response = await api('/api/registry');
       const body = await response.json() as { items: RegistryJob[] };
+      if (chooseInitialProject.current && body.items.length) {
+        chooseInitialProject.current = false;
+        setProject(body.items[0].project || 'Общий');
+      }
       setJobs(body.items);
     } catch (reason) { setError((reason as Error).message); }
   }
@@ -77,6 +100,7 @@ export function RegistryPage() {
   }
 
   async function change(job: RegistryJob, kind: 'retry' | 'reprocess' | 'delete') {
+    if (kind === 'delete' && !window.confirm('Удалить «' + job.originalName + '» и связанные сканы из каталога?')) return;
     setAction(job.id); setError('');
     try {
       await api(`/api/registry/${job.id}${kind === 'retry' ? '/retry' : kind === 'reprocess' ? '/reprocess' : ''}`, { method: kind === 'delete' ? 'DELETE' : 'POST' });
@@ -86,14 +110,25 @@ export function RegistryPage() {
   }
 
   const projectJobs = jobs.filter(job => (job.project || 'Общий') === selected);
-  return <section className="registry-page">
-    <div className="registry-intro"><h1>Документы проекта</h1></div>
-    <label className="project-label">Проект<input list="registry-projects" maxLength={120} disabled={uploading} value={project} onChange={e => setProject(e.target.value)} /></label>
-    <datalist id="registry-projects">{[...new Set(jobs.map(job => job.project || 'Общий'))].map(p => <option key={p}>{p}</option>)}</datalist>
-    <div className="catalog-tabs"><button aria-pressed={tab === 'upload'} onClick={() => setTab('upload')}>Загрузки и Excel</button><button aria-pressed={tab === 'catalog'} onClick={() => setTab('catalog')}>Каталог и комплекты</button></div>
-    {tab === 'catalog' ? <Catalog key={selected} project={selected} revision={jobs.filter(j => (j.project || 'Общий') === selected && j.status === 'done').map(j => j.id).join(',')} /> : <>
+  const currentView = views.find(view => view.id === tab)!;
+  return <section className="registry-workspace">
+    <aside className="registry-sidebar">
+      <label className="project-picker"><span>Проект</span><span className="project-choice"><Building2 size={18}/><select aria-label="Проект" disabled={uploading} value={project} onChange={e => navigate(tab,e.target.value)}>
+        {[...new Set([project,'Общий',...jobs.map(j => j.project || 'Общий')])].map(p => <option key={p}>{p}</option>)}</select><ChevronDown size={15}/></span></label>
+      <div className="workspace-links" role="group" aria-label="Разделы проекта">{views.map(({ id, icon: Icon, name }) =>
+        <button key={id} aria-current={id === tab ? 'page' : undefined} onClick={() => navigate(id)}><Icon size={17}/>{name}</button>)}</div>
+      <button className="new-project" disabled={uploading} onClick={() => setCreatingProject(!creatingProject)}><Plus size={15}/> Новый проект</button>
+      {creatingProject && <form className="new-project-form" onSubmit={e => { e.preventDefault(); if(projectDraft.trim()) { navigate('upload', projectDraft.trim()); setCreatingProject(false); setProjectDraft(''); } }}>
+        <label>Название проекта<input required autoFocus maxLength={120} value={projectDraft} onChange={e=>setProjectDraft(e.target.value)}/></label><button>Продолжить</button></form>}
+    </aside>
+    <div className="registry-main">
+      <div className="workspace-crumb"><Folder size={14}/>{selected}<span>/</span>{currentView.name}</div>
+      <header className="workspace-heading"><h1>{tab === 'catalog' ? 'Реестр документов' : currentView.name}</h1>
+      {tab !== 'upload' && <button className="upload-cta" disabled={uploading} onClick={() => { navigate('upload'); input.current?.click(); }}><Plus size={16}/> Загрузить PDF</button>}</header>
     {error && <p className="error-banner" role="alert">{error}</p>}
     <input ref={input} className="visually-hidden" type="file" accept=".pdf,application/pdf" aria-label="Выбрать PDF для реестра" onChange={event => select(event.target.files)} />
+    <div hidden={tab === 'upload'}><Catalog key={selected} project={selected} view={tab} revision={projectJobs.filter(j => j.status === 'done').map(j => j.id).join(',')} /></div>
+    <div hidden={tab !== 'upload'} className="uploads-panel">
     <div className={`dropzone registry-dropzone ${dragging ? 'dragging' : ''}`} onDragOver={event => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={drop}>
       <Upload size={28} strokeWidth={1.4} />
       <h2>Перетащите PDF сюда</h2>
@@ -118,6 +153,6 @@ export function RegistryPage() {
         </div>
       </div>)}
     </div>
-    </>}
+    </div></div>
   </section>;
 }
