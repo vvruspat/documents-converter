@@ -439,3 +439,80 @@ test('indexes old jobs, groups matching sources and resolves a kit when its docu
   await request(app).get('/api/registry/'+volume+'/source').expect(401);
   await request(app).get('/api/registry/'+volume+'/source').set('Cookie',cookie()).expect('Content-Type',/pdf/).expect(200);
 });
+
+test('archives complete owned transcriptions before chat extraction and resumes a failed register from PostgreSQL', async () => {
+  const settings = await options(), store = await openStore(settings);
+  const models = { recognition: 'test/reader', regions: 'test/detail', chat: 'test/archive' };
+  const order: string[] = [];
+  let failSecond = true;
+  let jobId = '';
+  const answer = (result: unknown) => Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }] });
+  const fetcher: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    order.push(body.model);
+    if (body.model === models.recognition) {
+      const {page} = JSON.parse(body.messages[1].content[0].text);
+      const page1 = page === 1;
+      return answer({
+        blank: false, object: 'Project', section: 'Roof', continuation: page1 ? '' : 'Signed appendix on the next sheet.',
+        documents: [{title:page1 ? 'Act' : 'Certificate', text:page1 ? 'Performer: Builder. Act number handwritten.' : 'Certificate C-15 issued by Lab.'}],
+        regions: page1 ? [{document:0,kind:'handwriting',left:100,top:100,right:300,bottom:250}] : [],
+      });
+    }
+    if (body.model === models.regions) return answer({text:'Act No. 000017',status:'read'});
+    assert.equal(body.model, models.chat);
+    const saved = await store.transcripts(jobId);
+    assert.equal(saved.length, 2);
+    assert.ok(saved.every(p => p.readings !== null));
+    const input = body.messages[1].content;
+    const parts = JSON.parse(input);
+    const first = parts[0].title === 'Act';
+    if (first) {
+      assert.match(input,/Signed appendix/);
+      assert.match(input,/Act No. 000017/);
+      assert.doesNotMatch(input,/C-15/);
+    } else {
+      assert.doesNotMatch(input,/000017|Signed appendix/);
+      if (failSecond) return new Response('', {status:402});
+    }
+    return answer({kind:first?'Акт':'Сертификат',name:first?'Act':'Certificate',number:first?'000017':'C-15',
+      date:'',organization:first?'Builder':'Lab',material:'',batch:'',work:'',floor:'',section:'',
+      reviewFields:[],evidence:[{field:'number',page:first?1:2,quote:first?'Act No. 000017':'C-15'}]});
+  };
+  const makeApp = () => createApp({...config, password:'', production:false, dataDir:settings.directory,historyStore:store}, fetcher);
+  let app = makeApp();
+  await request(app).put('/api/settings/models').send(models).expect(200);
+  const created = await request(app).post('/api/registry').query({project:'Archive'}).attach('pdf','server/fixtures/scanned-two-pages.pdf').expect(202);
+  jobId = created.body.job.id;
+  async function wait(status: string) {
+    const end = Date.now()+30_000;
+    do {
+      const j = (await request(app).get('/api/registry/'+jobId)).body.job;
+      if (j.status===status) return j;
+      if (j.status==='error') assert.fail(j.error);
+      await new Promise(r=>setTimeout(r,50));
+    } while (Date.now()<end);
+    assert.fail('Timed out waiting for '+status);
+  }
+  assert.equal((await wait('error')).recordCount,1);
+  const failedCalls = [...order];
+  app = makeApp();
+  failSecond = false;
+  await request(app).post('/api/registry/'+jobId+'/retry').expect(200);
+  assert.equal((await wait('done')).recordCount,2);
+  assert.deepEqual(order, [...failedCalls,models.chat]);
+  assert.deepEqual(failedCalls,[models.recognition,models.regions,models.recognition,models.chat,models.chat]);
+  const entries = await store.documentFields(jobId);
+  assert.deepEqual([...entries.values()].map(e=>[e.row.number,e.row.first,e.row.last]),[['000017',1,2],['C-15',2,2]]);
+  const catalog = (await request(app).get('/api/catalog').query({project:'Archive'})).body;
+  assert.ok(catalog.items.some((item: {number:string})=>item.number==='000017'));
+  await rm(app.locals.registryQueue.resultPath(created.body.job.id));
+  const xlsx = await app.locals.registryQueue.downloadPath(app.locals.registryQueue.get(jobId));
+  const book = new ExcelJS.Workbook(); await book.xlsx.readFile(xlsx);
+  assert.equal(book.worksheets[0].getCell('C8').value, '000017');
+  assert.equal(book.worksheets[0].getCell('C9').value, 'C-15');
+  assert.equal(order.length,6);
+  await request(app).delete('/api/registry/'+jobId).expect(200);
+  assert.equal((await store.transcripts(jobId)).length,0);
+  assert.equal((await store.documentFields(jobId)).size,0);
+});

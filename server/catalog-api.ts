@@ -90,6 +90,7 @@ export function installCatalog(app: Express, queue: RegistryQueue, db: Conversio
     const region = await recognizeRegion(source.dir,page,ordinal,parsed.data,'manual',{
       apiKey:config.apiKey, model:(await queue.models.get()).regions, fetcher
     }, true);
+    if (source.job.pipeline === 'document') await db.updateRegionReading(source.job.id, page, { ...region, document: ordinal });
     res.json({region});
   });
   app.get('/api/registry/:id/documents/:index/:asset', async (req,res) => {
@@ -111,11 +112,12 @@ export function installCatalog(app: Express, queue: RegistryQueue, db: Conversio
     if (asset === 'image') { res.type('jpeg').sendFile(scan.image,{dotfiles:'allow'}); return; }
     const [layout, evidence, regions] = await Promise.all([
       comparisonLayout(scan, { poll: req.query.poll === '1', retry: req.query.retry === '1' }, async text => {
+        if (job.pipeline === 'document') return;
         await savePageText(dir, page, text);
         if (!source.indexed) await indexJob(job);
         await db.indexPageText(job.id, page, text);
       }),
-      queue.evidence(job.id,page,ordinal), regionsFor(dir,page,ordinal),
+      queue.evidence(job.id,page,ordinal,index), regionsFor(dir,page,ordinal),
     ]);
     res.set('Cache-Control', 'no-store');
     res.status(layout.ocrStatus === 'pending' ? 202 : 200).json({ ...layout, evidence, regions,
@@ -143,7 +145,7 @@ export function installCatalog(app: Express, queue: RegistryQueue, db: Conversio
     const evidence = await Promise.all(candidates.map(async ({card, source, passage}, index) => {
       const { sources, ...fields } = card;
 
-      return { index, fields, excerpt: passage || await queue.excerpt(source.job, source.first, source.last) };
+      return { index, fields, excerpt: passage || await queue.excerpt(source.job, source.first, source.last, source.index) };
     }));
     const response = await fetcher('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST', headers: { Authorization: 'Bearer ' + config.apiKey, 'Content-Type': 'application/json' },

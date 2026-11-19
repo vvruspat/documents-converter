@@ -1,3 +1,4 @@
+import { sourceText, type DocumentFields, type StoredPage, type Transcript } from './document-register.js';
 import type { CatalogRow, DocumentSet, Requirement } from '../shared/catalog.js';
 import type { IndexedFile } from './catalog.js';
 import { Pool } from 'pg';
@@ -63,6 +64,10 @@ export class ConversionStore {
         job uuid REFERENCES ${this.namespace}.catalog_files(job) ON DELETE CASCADE, page integer NOT NULL,
         body text NOT NULL, terms tsvector GENERATED ALWAYS AS (to_tsvector('russian',body)) STORED, PRIMARY KEY(job,page))`);
       await client.query(`CREATE INDEX IF NOT EXISTS catalog_page_terms ON ${this.namespace}.catalog_pages USING gin(terms)`);
+      await client.query(`CREATE TABLE IF NOT EXISTS ${this.namespace}.registry_transcripts (
+        job uuid NOT NULL, page integer NOT NULL, transcript jsonb NOT NULL, readings jsonb, PRIMARY KEY(job,page))`);
+      await client.query(`CREATE TABLE IF NOT EXISTS ${this.namespace}.registry_document_fields (
+        job uuid NOT NULL, position integer NOT NULL, result jsonb NOT NULL, PRIMARY KEY(job,position))`);
       const finalized = await client.query(`SELECT key FROM ${this.namespace}.history_migrations WHERE key='sqlite-finalized'`);
       const legacy = finalized.rowCount ? [] : await this.readLegacy();
       let imported = 0;
@@ -207,8 +212,50 @@ export class ConversionStore {
     const result = await this.pool.query(`SELECT job,file,rows FROM ${this.namespace}.catalog_files WHERE project=$1 AND job=ANY($2::uuid[]) ORDER BY job`, [project,ids]);
     return result.rows;
   }
+  async transcripts(job: string, pages?: number[]): Promise<StoredPage[]> {
+    await this.ready();
+    return (await this.pool.query(`SELECT page,transcript,readings FROM ${this.namespace}.registry_transcripts
+      WHERE job=$1 AND ($2::int[] IS NULL OR page=ANY($2)) ORDER BY page`, [job, pages ?? null])).rows;
+  }
+  async saveTranscript(job: string, page: number, transcript: Transcript) {
+    await this.pool.query(`INSERT INTO ${this.namespace}.registry_transcripts(job,page,transcript)
+      VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [job,page,JSON.stringify(transcript)]);
+  }
+  async saveReadings(job: string, page: number, readings: NonNullable<StoredPage['readings']>) {
+    await this.pool.query(`UPDATE ${this.namespace}.registry_transcripts SET readings=$3 WHERE job=$1 AND page=$2`,
+      [job,page,JSON.stringify(readings)]);
+  }
+  async updateRegionReading(job: string, page: number, reading: NonNullable<StoredPage['readings']>[number]) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query<StoredPage>(`SELECT page,transcript,readings FROM ${this.namespace}.registry_transcripts
+        WHERE job=$1 AND page=$2 FOR UPDATE`, [job,page]);
+      const saved = result.rows[0];
+      if (!saved?.readings) throw new Error('Missing source page');
+      saved.readings = [...saved.readings.filter(r => r.document !== reading.document || r.id !== reading.id), reading];
+      await client.query(`UPDATE ${this.namespace}.registry_transcripts SET readings=$3 WHERE job=$1 AND page=$2`,
+        [job,page,JSON.stringify(saved.readings)]);
+      await client.query(`INSERT INTO ${this.namespace}.catalog_pages(job,page,body) VALUES ($1,$2,$3)
+        ON CONFLICT (job,page) DO UPDATE SET body=EXCLUDED.body`, [job,page,sourceText(saved)]);
+      await client.query('COMMIT');
+    } catch (error) { await client.query('ROLLBACK'); throw error; }
+    finally { client.release(); }
+  }
+  async documentFields(job: string): Promise<Map<number, DocumentFields>> {
+    await this.ready();
+    const result = await this.pool.query(`SELECT position,result FROM ${this.namespace}.registry_document_fields
+      WHERE job=$1 ORDER BY position`, [job]);
+    return new Map(result.rows.map(r => [r.position, r.result]));
+  }
+  async saveDocumentFields(job: string, position: number, fields: DocumentFields) {
+    await this.pool.query(`INSERT INTO ${this.namespace}.registry_document_fields(job,position,result)
+      VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [job,position,JSON.stringify(fields)]);
+  }
   async forgetFile(job: string) {
-    await this.pool.query(`DELETE FROM ${this.namespace}.catalog_files WHERE job=$1`, [job]);
+    await this.pool.query(`WITH sources AS (DELETE FROM ${this.namespace}.registry_transcripts WHERE job=$1),
+      fields AS (DELETE FROM ${this.namespace}.registry_document_fields WHERE job=$1)
+      DELETE FROM ${this.namespace}.catalog_files WHERE job=$1`, [job]);
   }
   async sets(project: string): Promise<DocumentSet[]> {
     await this.ready();

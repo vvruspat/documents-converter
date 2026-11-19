@@ -7,7 +7,7 @@ import { Check, Download, FileText, LoaderCircle, RotateCcw, Trash2, Upload } fr
 type RegistryJob = {
   id: string; project?: string; originalName: string; resultName: string;
   status: 'queued' | 'working' | 'done' | 'error';
-  pages: number; processedPages: number; recordCount: number; createdAt: string; error?: string;
+  documentsTotal?: number; pages: number; processedPages: number; recordCount: number; createdAt: string; error?: string;
 };
 const dateTime = new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
@@ -141,9 +141,9 @@ export function RegistryPage() {
         <FileText className="file-icon" size={22} strokeWidth={1.5} />
         <div className="job-body"><div className="job-name" title={job.originalName}>{job.originalName}</div>
           <div className={`job-status ${job.status === 'error' ? 'error-text' : ''}`} aria-live="polite">
-            {job.status === 'queued' ? 'В очереди' : job.status === 'working' ? `Обработано ${job.processedPages} из ${job.pages} стр.` : job.status === 'done' ? <><Check size={12} /> {job.recordCount} документов · {dateTime.format(new Date(job.createdAt))} · {job.resultName}</> : job.error}
+            {job.status === 'queued' ? 'В очереди' : job.status === 'working' && job.documentsTotal !== undefined ? `Заполняем реестр: ${job.recordCount} из ${job.documentsTotal} документов` : job.status === 'working' ? `Обработано ${job.processedPages} из ${job.pages} стр.` : job.status === 'done' ? <><Check size={12} /> {job.recordCount} документов · {dateTime.format(new Date(job.createdAt))} · {job.resultName}</> : job.error}
           </div>
-          <progress className="registry-progress" max={job.pages || 1} value={job.status === 'done' ? job.pages : job.processedPages} aria-label={`Обработка ${job.originalName}`} />
+          <progress className="registry-progress" max={(job.documentsTotal ?? job.pages) || 1} value={job.documentsTotal !== undefined ? job.recordCount : job.status === 'done' ? job.pages : job.processedPages} aria-label={`Обработка ${job.originalName}`} />
         </div>
         <div className="job-action">
           {job.status === 'done' && <a className="button compact" href={`/api/registry/${job.id}/result`} download={job.resultName}><Download size={15} />Скачать</a>}

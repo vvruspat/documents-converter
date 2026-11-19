@@ -23,7 +23,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   if (config.production && (config.password.length < 6 || config.sessionSecret.length < 32)) throw new Error('Production requires APP_PASSWORD (at least 6 characters) and SESSION_SECRET (at least 32 characters).');
   const history = config.historyStore ?? new ConversionStore({ directory: config.dataDir ?? path.resolve('.local/data'), connectionString: config.databaseUrl ?? '' });
   app.locals.conversionStore = history;
-  const registry = config.registryQueue ?? new RegistryQueue({ directory: config.dataDir ?? path.resolve('.local/data'), apiKey: config.apiKey, model: config.model, regionModel: config.regionModel, fetcher });
+  const registry = config.registryQueue ?? new RegistryQueue({ directory: config.dataDir ?? path.resolve('.local/data'), apiKey: config.apiKey, model: config.model, regionModel: config.regionModel, store: history, fetcher });
   app.locals.registryQueue = registry;
   let activeRecognitions = 0;
   app.disable('x-powered-by');
