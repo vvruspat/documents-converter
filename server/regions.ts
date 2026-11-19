@@ -100,7 +100,7 @@ async function readCrop(buffer: Buffer, box: RegionBox, config: Config) {
   const response = await (config.fetcher ?? fetch)('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + config.apiKey, 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(90_000),
+    signal: AbortSignal.timeout(5 * 60_000),
     body: JSON.stringify({
       model: config.model,
       temperature: 0,
