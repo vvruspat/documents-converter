@@ -5,7 +5,9 @@ import { link, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/p
 import path from 'node:path';
 import { promisify } from 'node:util';
 import ExcelJS from 'exceljs';
-import sharp from 'sharp';
+import { pageText, scanPage, saveDocument } from './scan.js';
+export { preparePageImage } from './scan.js';
+import type { ScanLayout } from '../shared/scan.js';
 import { z } from 'zod';
 import { kinds, type CatalogRow } from '../shared/catalog.js';
 import { safeFilename } from './history.js';
@@ -24,7 +26,11 @@ const documentSchema = z.object({
 const continuationSchema = z.object({
   number: z.string().max(200), date: z.string().max(120), organization: z.string().max(300),
 }).strict();
+const evidenceSchema = z.object({
+  document: z.number().int().min(-1), field: z.enum(['name','number','date','organization','material','batch','work','floor','section']), quote: z.string().max(500),
+});
 const pageSchema = z.object({
+  evidence: z.array(evidenceSchema).optional(),
   blank: z.boolean(),
   continuesPrevious: z.boolean(),
   object: z.string().max(500).optional(),
@@ -60,10 +66,12 @@ Set continuesPrevious=true only if this page is physically part of the previous 
 For each new document return a precise Russian title. For an act of concealed works, include the actual work from "К освидетельствованию предъявлены следующие работы" in the name. For a material certificate or passport, include the product or material when legible. The name "Акт освидетельствования скрытых работ" alone is insufficient if the work is visible. Set attachmentOfPrevious=true only for an explicit appendix to the preceding act, such as "Приложение № 1 к АОСР"; the appendix starts its own register row and does not extend the preceding act's page range.
 Return the document's OWN number, issue date and issuing organization. For a certificate use the full "Регистрационный номер", not a short printed blank number in the corner. For a passport use "Паспорт изделия №" or "Шильд №", which may be on its last page. For an act use the contractor named as the performer of the works ("лицо, выполнившее работы" or "составили настоящий акт"), not the customer, designer or construction supervisor. For a signed materials register use its own "Приложение №" and the signing organization. Do not substitute a certificate number, standard, drawing reference or date merely cited in a document's body.
 If the document continues from the preceding page, put its OWN number, issue date and issuer found on THIS page in continuation; otherwise leave continuation fields empty. These fields supplement the preceding document, not a new row. For date use DD.MM.YYYY when the issue date is unambiguous; keep validity periods as text "с DD.MM.YYYY по DD.MM.YYYY". Preserve Cyrillic, original numbering, meaningful subject, product model and location. Use an empty string when a field is absent or unreadable, and uncertain=true if any field is unclear. Do not invent missing facts.
-For catalog, classify the document by kind. Extract its material, batch identifier, work, floor and section only when explicitly stated for this document. Use empty strings for unknown values. On the first page set object to the construction project name from the PDF heading and section to the work or section named in the first document; otherwise use empty strings. Return only JSON.`;
+For catalog, classify the document by kind. Extract its material, batch identifier, work, floor and section only when explicitly stated for this document. Use empty strings for unknown values. On the first page set object to the construction project name from the PDF heading and section to the work or section named in the first document; otherwise use empty strings. For each catalog field you can ground on THIS page, add evidence with document (zero-based index in documents; -1 for continuation), field and a short verbatim quote at the correct location. Choose just the text for that field. Omit unsupported evidence. Return only JSON.`;
 const responseSchema = {
-  type: 'object', additionalProperties: false, required: ['blank', 'continuesPrevious', 'object', 'section', 'continuation', 'documents'],
+  type: 'object', additionalProperties: false, required: ['blank', 'continuesPrevious', 'object', 'section', 'continuation', 'documents', 'evidence'],
   properties: {
+    evidence: { type:'array', items:{ type:'object', additionalProperties:false, required:['document','field','quote'], properties:{
+      document:{type:'integer'}, field:{type:'string',enum:evidenceSchema.shape.field.options}, quote:{type:'string'} } } },
     blank: { type: 'boolean' }, continuesPrevious: { type: 'boolean' },
     object: { type: 'string' }, section: { type: 'string' },
     continuation: { type: 'object', additionalProperties: false,
@@ -89,39 +97,6 @@ async function pdfPages(filename: string): Promise<number> {
   } catch (error) {
     if (error instanceof UserError) throw error;
     throw new UserError('Не удалось прочитать PDF. Проверьте, что файл не повреждён и не защищён паролем.');
-  }
-}
-
-export async function preparePageImage(target: string): Promise<{ image: Buffer; ocr: string }> {
-  let image = await readFile(target);
-  try {
-    const { stdout } = await run('tesseract', [target, 'stdout', '--psm', '0'], { timeout: 30_000, maxBuffer: 256_000 });
-    const angle = Number(stdout.match(/^Rotate:\s*(0|90|180|270)/m)?.[1] ?? 0);
-    const confidence = Number(stdout.match(/^Orientation confidence:\s*([\d.]+)/m)?.[1] ?? 0);
-    if (angle && confidence >= 2.5) {
-      image = await sharp(image).rotate(angle).jpeg({ quality: 90 }).toBuffer();
-      await writeFile(target, image);
-    }
-  } catch { /* Sparse scans may have no detectable orientation. */ }
-  let ocr = '';
-  try {
-    const result = await run('tesseract', [target, 'stdout', '-l', 'rus+eng', '--psm', '3'], { timeout: 60_000, maxBuffer: 1_000_000 });
-    const content = result.stdout.trim();
-    ocr = content.length > 12_000 ? `${content.slice(0, 6_000)}\n…\n${content.slice(-6_000)}` : content;
-  } catch { /* The page image remains the authoritative source. */ }
-  return { image, ocr };
-}
-
-async function renderPage(source: string, page: number, target: string): Promise<{ image: Buffer; ocr: string }> {
-  const prefix = target.replace(/\.jpg$/, '');
-  try {
-    await run('pdftoppm', ['-f', String(page), '-l', String(page), '-singlefile', '-scale-to', '2200', '-jpeg', '-jpegopt', 'quality=85', source, prefix],
-      { timeout: 120_000, maxBuffer: 256_000 });
-    return await preparePageImage(target);
-  } catch {
-    throw new UserError(`Не удалось прочитать страницу ${page} PDF.`, 422);
-  } finally {
-    await rm(target, { force: true });
   }
 }
 
@@ -312,6 +287,10 @@ export class RegistryQueue {
     }
     return texts;
   }
+  async evidence(id: string, page: number, document: number) {
+    const result = pageSchema.parse(JSON.parse(await readFile(path.join(this.jobDir(id),'pages',page + '.json'),'utf8')));
+    return (result.evidence ?? []).filter(e => e.document === document);
+  }
   async excerpt(id: string, first: number, last: number) {
     if (!this.get(id)) return '';
     const texts = [];
@@ -399,7 +378,7 @@ export class RegistryQueue {
     }
   }
   private async process(job: RegistryJob) {
-    const dir = this.jobDir(job.id), source = path.join(dir, 'source.pdf');
+    const dir = this.jobDir(job.id);
     const pages: PageResult[] = [];
     let previous = '';
     for (let page = 1; page <= job.pages; page++) {
@@ -407,7 +386,10 @@ export class RegistryQueue {
       let result: PageResult;
       try { result = pageSchema.parse(JSON.parse(await readFile(file, 'utf8'))); }
       catch {
-        const { image, ocr } = await renderPage(source, page, path.join(dir, 'page.jpg'));
+        const scan = await scanPage(dir,page);
+        const layout: ScanLayout = JSON.parse(await readFile(scan.layout,'utf8'));
+        const image = await readFile(scan.image);
+        const ocr = pageText(layout.words);
         await writeFile(path.join(dir, 'pages', page + '.txt'), ocr, { mode: 0o600 });
         result = await recognizePage(image, ocr, page, previous, this.options.apiKey, this.options.model, this.options.fetcher ?? fetch);
         const temp = `${file}.${randomUUID()}.tmp`;
@@ -420,6 +402,8 @@ export class RegistryQueue {
       job.processedPages = page;
       await this.save(job);
     }
+    const rows = registryRows(pages);
+    for (const [index,row] of rows.entries()) await saveDocument(dir,index,row);
     const resultPath = this.resultPath(job.id), temporary = path.join(dir, 'result.pending.xlsx');
     job.recordCount = await writeRegistry(temporary, job.originalName, pages);
     await rename(temporary, resultPath);

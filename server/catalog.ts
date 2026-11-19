@@ -11,7 +11,7 @@ export function catalogCards(files: IndexedFile[]): Card[] {
         ? [job, index] : Object.entries(fields).filter(([key]) => key !== 'uncertain').sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => [key, normalized(String(value))]);
       const id = createHash('sha256').update(JSON.stringify(signature)).digest('hex');
       const card = cards.get(id) ?? { ...fields, id, sources: [] };
-      card.sources.push({ job, file, first, last });
+      card.sources.push({ index, job, file, first, last });
       cards.set(id, card);
     });
   }

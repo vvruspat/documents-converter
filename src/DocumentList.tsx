@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { ArrowUpRight, BookOpen, ChevronLeft, ChevronRight, ClipboardList, FileBadge, FileText, FolderOpen, ListFilter, Search, Shapes, X } from 'lucide-react';
+import { ScanComparison } from './ScanComparison';
 import { normalized, type Card, type Source } from '../shared/catalog';
 
 const icons = { 'Акт': ClipboardList, 'Паспорт': BookOpen, 'Сертификат': FileBadge, 'Исполнительная схема': Shapes };
@@ -15,24 +16,6 @@ export function SourceLink({ source }: { source: Source }) {
 function ScanShortcut({ source }: { source: Source }) {
   return <a className="scan-shortcut" target="_blank" rel="noreferrer" href={`/api/registry/${source.job}/source#page=${source.first}`}>
     <span>{source.file}</span><small>Лист {source.first}{source.last !== source.first && '–' + source.last} ↗</small></a>;
-}
-function DocumentDialog({ card, close }: { card: Card; close: () => void }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const dialog = ref.current!;
-    if (typeof dialog.showModal === 'function') {
-      dialog.showModal();
-      return () => dialog.close();
-    }
-    dialog.setAttribute('open', '');
-  }, []);
-  const fields = [['Номер документа', card.number], ['Дата', card.date], ['Организация', card.organization], ['Материал',card.material], ['Партия',card.batch], ['Вид работ',card.work], ['Секция',card.section], ['Этаж',card.floor]];
-  return <dialog ref={ref} className="document-dialog" aria-labelledby="card-heading" onCancel={close} onClick={e => { if (e.target === ref.current) close(); }}>
-    <article><div className="dialog-top"><DocumentIcon kind={card.kind}/><span>{card.kind}</span><button className="round-control" aria-label="Закрыть карточку" onClick={close} autoFocus><X size={18}/></button></div>
-      <h2 id="card-heading">{card.name}</h2>{card.uncertain && <span className="review-state">Требует проверки</span>}
-      <dl>{fields.filter(([,v],i) => v || i < 3).map(([k,v]) => <div key={k}><dt>{k}</dt><dd>{v || 'Не указано'}</dd></div>)}</dl>
-      <h3>Исходные сканы</h3>{card.sources.map((s,i) => <SourceLink source={s} key={i}/>)}
-    </article></dialog>;
 }
 const perPage = 20;
 export function DocumentList({ cards, loading }: { cards: Card[]; loading: boolean }) {
@@ -57,6 +40,6 @@ export function DocumentList({ cards, loading }: { cards: Card[]; loading: boole
         <td>{c.organization || '—'}</td><td>{c.date || '—'}</td><td className="scan-column" onClick={e=>e.stopPropagation()}><ScanShortcut source={c.sources.find(s=>s.job===volume) ?? c.sources[0]}/></td><td><ChevronRight size={15}/></td></tr>)}</tbody></table>
       <footer className="library-pager"><span>{start+1}–{Math.min(start+perPage,filtered.length)} из {filtered.length}</span><button aria-label="Предыдущая страница" disabled={!current} onClick={()=>setPage(current-1)}><ChevronLeft size={16}/></button><button aria-label="Следующая страница" disabled={start+perPage>=filtered.length} onClick={()=>setPage(current+1)}><ChevronRight size={16}/></button></footer></> :
       <div className="library-empty"><FolderOpen/><p>{loading ? 'Загружаем документы…' : cards.length ? 'Документы не найдены' : 'В проекте пока нет документов'}</p>{(query || kind || review || volume) && <button onClick={()=>{setKind('');setQuery('');setVolume('');setReview(false);setPage(0);}}><X size={14}/> Сбросить фильтры</button>}</div>}
-    {opened && <DocumentDialog card={opened} close={()=>setOpened(null)}/>}
+    {opened && <ScanComparison preferredJob={volume} card={opened} close={()=>setOpened(null)}/>}
   </section>;
 }

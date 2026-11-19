@@ -396,6 +396,17 @@ test('indexes old jobs, groups matching sources and resolves a kit when its docu
   const card = res.body.items.find((c: { number: string }) => c.number === '373');
   assert.equal(card.sources.length, 2);
   assert.equal(card.sources.find((s: { job: string }) => s.job === volume).first, 2);
+  const occurrence = card.sources.find((s: { job: string }) => s.job === volume);
+  assert.equal(occurrence.index, 1);
+  const base = '/api/registry/' + volume + '/documents/' + occurrence.index;
+  await request(app).get(base + '/pdf').expect(401);
+  await request(app).get(base + '/layout?page=1').set('Cookie', cookie()).expect(404);
+  const layout = await request(app).get(base + '/layout?page=2').set('Cookie', cookie()).expect(200);
+  assert.ok(layout.body.words.length);
+  assert.deepEqual(layout.body.evidence, []);
+  await request(app).get(base + '/image?page=2').set('Cookie', cookie()).expect('Content-Type', /jpeg/).expect(200);
+  const file = await request(app).get(base + '/pdf').set('Cookie', cookie()).expect('Content-Disposition', /attachment/).expect(200);
+  assert.equal((await PDFDocument.load(file.body)).getPageCount(), 1);
   const set = res.body.sets[0];
   await request(app).post('/api/catalog/confirm').query(params).set('Cookie', cookie()).send({ id: set.id, position: 0, card: card.id }).expect(200);
   const saved = await request(app).get('/api/catalog').query(params).set('Cookie', cookie()).expect(200);

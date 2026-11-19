@@ -131,3 +131,26 @@
 
 @media(min-width:681px) { .registry-sidebar { position:sticky; top:0; align-self:start; min-height:100vh; } }
 @media(max-width:680px) { .project-choice select,.new-project-form input,.library-toolbar input,.ask-panel textarea { font-size:16px; } }
+.scan-dialog { width:min(1480px,97vw); max-width:97vw; height:94vh; max-height:94vh; border:1px solid #cdd6d1; border-radius:12px; padding:16px; color:var(--ink); }
+.scan-dialog[open] { display:flex; flex-direction:column; gap:9px; }
+.scan-dialog::backdrop { background:#11251f88; }
+.scan-dialog header,.scan-controls,.scan-field,.scan-dialog footer { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
+.scan-dialog header { justify-content:space-between; flex-wrap:nowrap; }
+.scan-dialog h2 { font-size:clamp(15px,1.6vw,23px); line-height:1.25; margin:3px 0; }
+.scan-dialog small,.scan-field label,.scan-controls label { font-size:12px; color:#52675b; }
+.scan-dialog select { font:inherit; max-width:100%; border:1px solid #cbd5cd; border-radius:5px; padding:6px; background:white; color:inherit; }
+.scan-controls a,.scan-dialog button { display:inline-flex; align-items:center; gap:5px; font-size:13px; }
+.scan-controls a { color:var(--accent); font-weight:600; }
+.scan-field { padding:7px 10px; background:#f6f7f2; border-radius:6px; }
+.scan-field b { max-height:4em; overflow:auto; overflow-wrap:anywhere; }
+.scan-headings,.scan-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px; }
+.scan-headings { font-size:13px; }
+.scan-pair,.scan-wait { flex:1; min-height:80px; }
+.scan-scroll { overflow:auto; background:#e9eeeb; border:1px solid #ced8d1; scrollbar-gutter:stable; }
+.scan-scroll svg { display:block; background:white; height:auto; max-width:none; }
+.scan-dialog footer { font-size:13px; }.scan-dialog footer button:nth-of-type(3) { margin-left:auto; }
+@media(max-width:680px) {
+  .scan-dialog { width:100vw; max-width:100vw; max-height:98vh; height:98vh; padding:8px; }
+  .scan-dialog header small { display:none; }.scan-controls label { max-width:100%; }
+  .scan-pair,.scan-headings { gap:3px; }.scan-dialog footer { gap:4px; }
+}

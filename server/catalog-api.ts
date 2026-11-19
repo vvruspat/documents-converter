@@ -1,3 +1,7 @@
+import path from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { safeFilename } from './history.js';
+import { scanPage, saveDocument } from './scan.js';
 import type { Express } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
@@ -52,6 +56,30 @@ export function installCatalog(app: Express, queue: RegistryQueue, db: Conversio
     if (card && !assess(set.requirements[position], await cards(project)).matches.some(item => item.id === card)) throw new UserError('Документ не подходит к этой позиции.', 409);
     await db.confirm(project,id,position,card);
     res.json({ ok: true });
+  });
+  app.get('/api/registry/:id/documents/:index/:asset', async (req,res) => {
+    await queue.ready;
+    const job = queue.get(String(req.params.id));
+    const index = Number(req.params.index), asset = String(req.params.asset);
+    if (job?.status !== 'done' || !Number.isSafeInteger(index) || index < 0 || !['pdf','layout','image'].includes(asset)) throw new UserError('Документ не найден.',404);
+    const [indexed] = await db.catalogFiles(job.project ?? 'Общий',[job.id]);
+    const rows = indexed?.rows ?? await queue.catalogRows(job);
+    const row = rows[index];
+    if (!row) throw new UserError('Документ не найден.',404);
+    const dir = path.dirname(queue.sourcePath(job.id));
+    if (asset === 'pdf') {
+      const filename = safeFilename([row.name,row.number].filter(Boolean).join(' ').replace(/[/:]/g,'-')).slice(0,100);
+      res.download(await saveDocument(dir,index,row),filename + '.pdf',{ dotfiles:'allow' });
+      return;
+    }
+    const page = Number(req.query.page);
+    if (!Number.isSafeInteger(page) || page < row.first || page > row.last) throw new UserError('Страница вне документа.',404);
+    const scan = await scanPage(dir,page);
+    if (asset === 'image') { res.type('jpeg').sendFile(scan.image,{dotfiles:'allow'}); return; }
+    const ordinal = page === row.first ? index - rows.findIndex(r => r.first === page) : -1;
+    const evidence = await queue.evidence(job.id,page,ordinal);
+    res.json({ ...JSON.parse(await readFile(scan.layout,'utf8')), evidence,
+      shared:rows.some((r,i) => i !== index && r.first <= page && page <= r.last) });
   });
   app.get('/api/registry/:id/source', async (req, res) => {
     await queue.ready;

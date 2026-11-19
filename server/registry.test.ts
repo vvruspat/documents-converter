@@ -6,6 +6,8 @@ import path from 'node:path';
 import test from 'node:test';
 import ExcelJS from 'exceljs';
 import sharp from 'sharp';
+import { PDFDocument } from 'pdf-lib';
+import { locate, fieldLines } from '../shared/scan.js';
 import supertest from 'supertest';
 import { createApp } from './app.js';
 import type { ConversionStore } from './history.js';
@@ -22,6 +24,14 @@ test('straightens a sideways scan before OCR and model input', async () => {
     const metadata = await sharp(prepared.image).metadata();
     assert.ok(metadata.height! > metadata.width!);
     assert.match(prepared.ocr, /Materials register/);
+    assert.deepEqual([prepared.layout.width, prepared.layout.height], [metadata.width, metadata.height]);
+    const words = prepared.layout.words;
+    assert.ok(words.every(w => w.x >= 0 && w.y >= 0 && w.x + w.w <= metadata.width && w.y + w.h <= metadata.height));
+    const range = locate(words, 'Materials register');
+    assert.ok(range);
+    const title = words.slice(range[0], range[1] + 1);
+    assert.equal(fieldLines(title, 'Реестр материалов')[0].text, 'Реестр материалов');
+    assert.equal(locate([...title, ...title], 'Materials register'), undefined);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -74,6 +84,15 @@ test('creates a register from scanned PDF pages and persists the completed resul
     assert.equal(job.recordCount, 1);
     assert.equal(job.processedPages, 2);
     assert.equal(requests, 2);
+    const dir = path.dirname(queue.sourcePath(created.id));
+    const pdf = await PDFDocument.load(await readFile(path.join(dir, 'documents/0.pdf')));
+    const original = await PDFDocument.load(await readFile(fixture));
+    assert.equal(pdf.getPageCount(), original.getPageCount());
+    for (const [index, page] of pdf.getPages().entries()) {
+      assert.ok(Math.abs(page.getWidth() - original.getPage(index).getWidth()) < 0.001);
+      assert.ok(Math.abs(page.getHeight() - original.getPage(index).getHeight()) < 0.001);
+    }
+    assert.equal(pdf.getTitle(), 'Паспорт изделия');
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(await readFile(queue.resultPath(created.id)));
     const sheet = workbook.worksheets[0];

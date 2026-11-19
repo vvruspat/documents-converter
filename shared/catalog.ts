@@ -5,7 +5,7 @@ export type CatalogRow = CatalogFields & {
   name: string; number: string; date: string; organization: string;
   first: number; last: number; uncertain: boolean;
 };
-export type Source = { job: string; file: string; first: number; last: number };
+export type Source = { index: number; job: string; file: string; first: number; last: number };
 export type Card = Omit<CatalogRow, 'first' | 'last'> & { id: string; sources: Source[] };
 export type Requirement = { section?: string; floor?: string; work?: string; kind: string; number: string; batch: string; organization: string };
 export type DocumentSet = { id: string; project: string; name: string; confirmations: Record<string,string>; requirements: Requirement[] };
