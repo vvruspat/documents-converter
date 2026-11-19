@@ -247,3 +247,38 @@ export async function recognizeRegion(
   inFlight.set(file, {model:config.model, task});
   return task;
 }
+
+// Both readers take work from the same page. Keep source order even when the second finishes first.
+export async function readPageRegions(
+  dir: string, page: number, boxes: z.infer<typeof detectedRegion>[], config: Config, retryErrors = false
+) {
+  const unique = new Map<string, z.infer<typeof detectedRegion>>();
+  for (const box of boxes) {
+    const key = JSON.stringify([box.document, box.kind, box.left, box.top, box.right, box.bottom]);
+    unique.set(key, box);
+  }
+  const pending = [...unique.values()].entries();
+  const readings: (Region & { document: number })[] = [];
+  let stopped = false;
+  async function readNext() {
+    try {
+      while (!stopped) {
+        const next = pending.next();
+        if (next.done) break;
+        const [index, box] = next.value;
+        const reading = await recognizeRegion(dir, page, box.document, box, 'auto', config, retryErrors);
+        if (retryErrors && reading.status === 'error') {
+          throw new UserError('Не удалось обработать фрагмент страницы ' + page + '. Повторите обработку, чтобы заполнить реестр.', 502);
+        }
+        readings[index] = { ...reading, document: box.document };
+      }
+    } catch (error) {
+      stopped = true;
+      throw error;
+    }
+  }
+  // Let an already running read save its checkpoint before the job can be retried.
+  const workers = await Promise.allSettled([readNext(), readNext()]);
+  for (const worker of workers) if (worker.status === 'rejected') throw worker.reason;
+  return readings;
+}

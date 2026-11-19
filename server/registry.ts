@@ -1,5 +1,5 @@
 import { ModelSettings } from './models.js';
-import { detectedRegion, detectionFormat, recognizeRegion, regionBox } from './regions.js';
+import { detectedRegion, detectionFormat, readPageRegions, regionBox } from './regions.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
@@ -11,7 +11,7 @@ import { scanPage, savePageText, saveDocument } from './scan.js';
 import { fieldLabels, type Field } from '../shared/scan.js';
 import { z } from 'zod';
 import { fieldsToReview, unreadableText, kinds, type CatalogRow } from '../shared/catalog.js';
-import { documentsFromPages, extractDocument, transcribe, sourceText, type StoredPage } from './document-register.js';
+import { documentsFromPages, extractDocument, transcribe, sourceText } from './document-register.js';
 import { safeFilename, type ConversionStore } from './history.js';
 import { UserError } from './recognize.js';
 
@@ -466,14 +466,7 @@ export class RegistryQueue {
         data = { page, transcript, readings: null };
       }
       if (data.readings === null) {
-        const readings: NonNullable<StoredPage['readings']> = [];
-        for (const box of data.transcript.regions) {
-          const reading = await recognizeRegion(dir, page, box.document, box, 'auto', { ...reader, model: models.regions }, true);
-          if (reading.status === 'error') {
-            throw new UserError('Не удалось обработать фрагмент страницы ' + page + '. Повторите обработку, чтобы заполнить реестр.', 502);
-          }
-          if (!readings.some(r => r.document === box.document && r.id === reading.id)) readings.push({ ...reading, document: box.document });
-        }
+        const readings = await readPageRegions(dir, page, data.transcript.regions, { ...reader, model: models.regions }, true);
         await db.saveReadings(job.id, page, readings);
       }
       const started = data.transcript.documents.at(-1);
@@ -522,12 +515,9 @@ export class RegistryQueue {
         await writeFile(temp, JSON.stringify(result), { mode: 0o600 });
         await rename(temp, file);
       }
-      for (const region of result.regions ?? []) {
-        if (region.document === -1 ? !result.continuesPrevious || !previous : region.document >= result.documents.length) continue;
-        await recognizeRegion(dir, page, region.document, region, 'auto', {
-          ...this.options, model: job.models!.regions
-        });
-      }
+      const regions = (result.regions ?? []).filter(region => region.document === -1
+        ? result.continuesPrevious && !!previous : region.document < result.documents.length);
+      await readPageRegions(dir, page, regions, { ...this.options, model: job.models!.regions });
       pages.push(result);
       const latest = result.documents.at(-1);
       if (latest) previous = [latest.name, latest.number].filter(Boolean).join(' ');
