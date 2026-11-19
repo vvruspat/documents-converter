@@ -450,6 +450,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   const fetcher: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body));
     order.push(body.model);
+    if (body.model === models.recognition && body.response_format.json_schema.name === 'region_transcription') return answer({text:'КОПИЯ ВЕРНА',status:'read'});
     if (body.model === models.recognition) {
       const {page} = JSON.parse(body.messages[1].content[0].text);
       const page1 = page === 1;
@@ -457,8 +458,9 @@ test('archives complete owned transcriptions before chat extraction and resumes 
         blank: false, object: 'Project', section: 'Roof', continuation: page1 ? '' : 'Signed appendix on the next sheet.',
         documents: [{title:page1 ? 'Act' : 'Certificate', text:page1 ? 'Performer: Builder. Act number handwritten.' : 'Certificate C-15 issued by Lab.'}],
         regions: page1 ? [
-          {document:0,kind:'handwriting',left:100,top:100,right:300,bottom:250},
-          {document:0,kind:'seal',left:400,top:100,right:600,bottom:250},
+          {document:0,kind:'handwriting',left:100,top:100,right:300,bottom:250,reading:{text:'[неразборчиво]',confidence:'high'}},
+          {document:0,kind:'seal',left:400,top:100,right:600,bottom:250,reading:{text:'Build',confidence:'medium'}},
+          {document:0,kind:'stamp',left:400,top:300,right:600,bottom:400,reading:{text:'КОПИЯ ВЕРНА',confidence:'high'}},
         ] : [],
       });
     }
@@ -478,6 +480,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
     const first = parts[0].title === 'Act';
     if (first) {
       assert.match(input,/Signed appendix/);
+      assert.match(input,/КОПИЯ ВЕРНА/);
       assert.match(input,/Act No. 000017/);
       assert.doesNotMatch(input,/C-15/);
     } else {
@@ -509,7 +512,9 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   await request(app).post('/api/registry/'+jobId+'/retry').expect(200);
   assert.equal((await wait('error')).recordCount,1);
   assert.equal(sealCalls,1);
-  assert.deepEqual((await store.transcripts(jobId))[0].readings?.map(r => r.kind), ['handwriting','seal']);
+  assert.deepEqual((await store.transcripts(jobId))[0].readings?.map(r => r.kind), ['handwriting','seal','stamp']);
+  const stamp = (await store.transcripts(jobId))[0].readings!.at(-1)!;
+  assert.deepEqual([stamp.text,stamp.method,stamp.model], ['КОПИЯ ВЕРНА','page',models.recognition]);
   const failedCalls = [...order];
   app = makeApp();
   failSecond = false;
@@ -527,6 +532,13 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   assert.equal(book.worksheets[0].getCell('C8').value, '000017');
   assert.equal(book.worksheets[0].getCell('C9').value, 'C-15');
   assert.equal(order.length,8);
+  const preview = await request(app).get('/api/registry/'+jobId+'/documents/0/image?page=1&region='+stamp.id).expect(200);
+  assert.match(preview.headers['content-type'],/image\/png/);
+  await request(app).put('/api/settings/models').send({...models,regions:models.recognition}).expect(200);
+  const verified = await request(app).post('/api/registry/'+jobId+'/documents/0/regions?page=1').send(stamp).expect(200);
+  assert.equal(verified.body.region.method,'crop');
+  assert.equal(verified.body.region.previous[0].method,'page');
+  assert.equal(order.length,9);
   await request(app).delete('/api/registry/'+jobId).expect(200);
   assert.equal((await store.transcripts(jobId)).length,0);
   assert.equal((await store.documentFields(jobId)).size,0);

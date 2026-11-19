@@ -1,5 +1,5 @@
 import { ModelSettings } from './models.js';
-import { detectedRegion, detectionFormat, readPageRegions, regionBox } from './regions.js';
+import { detectedRegion, detectionFormat, readPageRegions, regionBox, regionDetectionPrompt } from './regions.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
@@ -75,7 +75,7 @@ Set continuesPrevious=true only if this page is physically part of the previous 
 For each new document return a precise Russian title. For an act of concealed works, include the actual work from "К освидетельствованию предъявлены следующие работы" in the name. For a material certificate or passport, include the product or material when legible. The name "Акт освидетельствования скрытых работ" alone is insufficient if the work is visible. Set attachmentOfPrevious=true only for an explicit appendix to the preceding act, such as "Приложение № 1 к АОСР"; the appendix starts its own register row and does not extend the preceding act's page range.
 Return the document's OWN number, issue date and issuing organization. For a certificate use the full "Регистрационный номер", not a short printed blank number in the corner. For a passport use "Паспорт изделия №" or "Шильд №", which may be on its last page. For an act use the contractor named as the performer of the works ("лицо, выполнившее работы" or "составили настоящий акт"), not the customer, designer or construction supervisor. For a signed materials register use its own "Приложение №" and the signing organization. Do not substitute a certificate number, standard, drawing reference or date merely cited in a document's body.
 If the document continues from the preceding page, put its OWN number, issue date and issuer found on THIS page in continuation; otherwise leave continuation fields empty. These fields supplement the preceding document, not a new row. For date use DD.MM.YYYY when the issue date is unambiguous; keep validity periods as text "с DD.MM.YYYY по DD.MM.YYYY". Preserve Cyrillic, original numbering, meaningful subject, product model and location. In reviewFields list ONLY individual fields visibly present whose value is unreadable, partially legible or has competing plausible readings. Keep the legible part or an empty string. Use [] when nothing needs checking. An absent field, an inapplicable field, a missing OCR match, or a value expected on a later page is not a recognition failure. Apply the same rules to continuation. For an unreadable value, include a short visible quote or adjacent field label in evidence if available. Do not invent missing facts.
-For catalog, classify the document by kind. Extract its material, batch identifier, work, floor and section only when explicitly stated for this document. Use empty strings for unknown values. On the first page set object to the construction project name from the PDF heading and section to the work or section named in the first document; otherwise use empty strings. For each catalog field you can ground on THIS page, add evidence with document (zero-based index in documents; -1 for continuation), field and a short verbatim quote at the correct location. Choose just the text for that field. Omit unsupported evidence. In regions locate individual organization seals (seal), rectangular text stamps (stamp) and handwritten text blocks (handwriting). Exclude signature flourishes alone, printed paragraphs and blank fields. Return a separate snug box around each complete imprint or handwriting block with a small margin, even if two overlap. Use integer coordinates left,top,right,bottom from 0 to 1000 relative to this upright image, origin top left. Set document to the zero-based index of its owner in documents, or -1 for the previous document continuing on this page. Omit regions of unknown ownership. Return [] if none. Return only JSON.`;
+For catalog, classify the document by kind. Extract its material, batch identifier, work, floor and section only when explicitly stated for this document. Use empty strings for unknown values. On the first page set object to the construction project name from the PDF heading and section to the work or section named in the first document; otherwise use empty strings. For each catalog field you can ground on THIS page, add evidence with document (zero-based index in documents; -1 for continuation), field and a short verbatim quote at the correct location. Choose just the text for that field. Omit unsupported evidence. In regions locate individual organization seals (seal), rectangular text stamps (stamp) and handwritten text blocks (handwriting). Exclude signature flourishes alone, printed paragraphs and blank fields. Return a separate snug box around each complete imprint or handwriting block with a small margin, even if two overlap. Use integer coordinates left,top,right,bottom from 0 to 1000 relative to this upright image, origin top left. Set document to the zero-based index of its owner in documents, or -1 for the previous document continuing on this page. Omit regions of unknown ownership. Return [] if none. ${regionDetectionPrompt} Return only JSON.`;
 const responseSchema = {
   type: 'object', additionalProperties: false, required: ['blank', 'continuesPrevious', 'object', 'section', 'continuation', 'documents', 'evidence', 'regions'],
   properties: {
@@ -466,7 +466,7 @@ export class RegistryQueue {
         data = { page, transcript, readings: null };
       }
       if (data.readings === null) {
-        const readings = await readPageRegions(dir, page, data.transcript.regions, { ...reader, model: models.regions }, true);
+        const readings = await readPageRegions(dir, page, data.transcript.regions, { ...reader, model: models.regions }, models.recognition, true);
         await db.saveReadings(job.id, page, readings);
       }
       const started = data.transcript.documents.at(-1);
@@ -517,7 +517,7 @@ export class RegistryQueue {
       }
       const regions = (result.regions ?? []).filter(region => region.document === -1
         ? result.continuesPrevious && !!previous : region.document < result.documents.length);
-      await readPageRegions(dir, page, regions, { ...this.options, model: job.models!.regions });
+      await readPageRegions(dir, page, regions, { ...this.options, model: job.models!.regions }, job.models!.recognition);
       pages.push(result);
       const latest = result.documents.at(-1);
       if (latest) previous = [latest.name, latest.number].filter(Boolean).join(' ');
