@@ -365,3 +365,43 @@ test('multipage documents can contain more than eight separate tables', async ()
   const book = new ExcelJS.Workbook(); await book.xlsx.load(await exportExcel({ documents: [{ name: 'twenty-pages.pdf', document }] }));
   assert.equal(book.worksheets.length, 20);
 });
+
+test('indexes old jobs, groups matching sources and resolves a kit when its document arrives', async () => {
+  const settings = await options();
+  const historyStore = await openStore(settings);
+  const fixtureDir = path.join(settings.directory, 'registry-jobs');
+  const project = 'Секция 2';
+  const doc = { name: 'Паспорт панели', organization: 'ДСК', number: '373', date: '02.2026', uncertain: false };
+  async function seed(name: string, contents: (typeof doc)[], workspace = project) {
+    const id = randomUUID(), dir = path.join(fixtureDir, id);
+    await mkdir(path.join(dir, 'pages'), { recursive: true });
+    await writeFile(path.join(dir, 'job.json'), JSON.stringify({ id, originalName: name, project: workspace, createdAt: new Date().toISOString(), status: 'done', pages: contents.length }));
+    await writeFile(path.join(dir, 'source.pdf'), await readFile('server/fixtures/scanned-two-pages.pdf'));
+    for (const [i, record] of contents.entries()) await writeFile(path.join(dir, 'pages', (i+1)+'.json'), JSON.stringify({ documents: [record], blank: false, continuesPrevious: false }));
+    return id;
+  }
+  const qa = async () => Response.json({ choices: [{ message: { content: JSON.stringify({ answers: [{ index: 0, text: 'Паспорт №373.' }] }) } }] });
+  const appForJobs = () => createApp({ ...config, historyStore, dataDir: settings.directory }, qa as typeof fetch);
+  let app = appForJobs();
+  const params = { project }, req = { kind: 'Паспорт', number: '373', batch: '', organization: 'ДСК' };
+  await request(app).post('/api/catalog/sets').query(params).set('Cookie', cookie()).send({ name: 'Панели', requirements: [req] }).expect(201);
+  const empty = await request(app).get('/api/catalog').query(params).set('Cookie', cookie()).expect(200);
+  assert.equal(empty.body.items.length, 0);
+  const volume = await seed('Том.pdf', [{ ...doc, name: 'Акт работ', number: 'А1' }, doc]);
+  await seed('Паспорт.pdf', [doc]);
+  await seed('Другой проект.pdf', [doc], 'Другой');
+  app = appForJobs();
+  const res = await request(app).get('/api/catalog').query(params).set('Cookie', cookie()).expect(200);
+  assert.equal(res.body.items.length, 2);
+  const card = res.body.items.find((c: { number: string }) => c.number === '373');
+  assert.equal(card.sources.length, 2);
+  assert.equal(card.sources.find((s: { job: string }) => s.job === volume).first, 2);
+  const set = res.body.sets[0];
+  await request(app).post('/api/catalog/confirm').query(params).set('Cookie', cookie()).send({ id: set.id, position: 0, card: card.id }).expect(200);
+  const saved = await request(app).get('/api/catalog').query(params).set('Cookie', cookie()).expect(200);
+  assert.equal(saved.body.sets[0].confirmations['0'],card.id);
+  const answer = await request(app).post('/api/catalog/ask').query(params).set('Cookie', cookie()).send({ question: 'Паспорт 373' }).expect(200);
+  assert.equal(answer.body.answers[0].source.job, card.sources[0].job);
+  await request(app).get('/api/registry/'+volume+'/source').expect(401);
+  await request(app).get('/api/registry/'+volume+'/source').set('Cookie',cookie()).expect('Content-Type',/pdf/).expect(200);
+});

@@ -1,3 +1,4 @@
+import { installCatalog, projectName } from './catalog-api.js';
 import express from 'express';
 import multer from 'multer';
 import helmet from 'helmet';
@@ -75,6 +76,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   });
   app.post('/api/logout', (_req, res) => { res.clearCookie('dc_session', { path: '/', httpOnly: true, secure: config.production, sameSite: 'strict' }); res.json({ ok: true }); });
   app.use('/api', (req, res, next) => { if (!authenticated(req)) { res.status(401).json({ error: 'Войдите в сервис, чтобы продолжить.' }); return; } next(); });
+  installCatalog(app, registry, history, config, fetcher);
   app.get('/api/config', (_req, res) => { res.json({ configured: Boolean(config.apiKey), model: config.model, maxFileBytes: MAX_FILE_BYTES, maxPdfPages: MAX_PDF_PAGES, supportedMimeTypes: [...IMAGE_MIMES, 'application/pdf'] }); });
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_BYTES, files: 1, fields: 0, parts: 1 } });
   const registryUpload = multer({ storage: multer.diskStorage({ destination: registry.uploadDirectory, filename: (_req, _file, callback) => callback(null, `${randomUUID()}.upload`) }), limits: { files: 1, fields: 0, parts: 1 } });
@@ -103,7 +105,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
     if (!req.file) throw new UserError('Выберите PDF с документами.');
     try {
       if (!isPdfUpload(req.file.mimetype, req.file.originalname)) throw new UserError('Для реестра нужен PDF.');
-      const job = await registry.create(req.file.path, req.file.originalname);
+      const job = await registry.create(req.file.path, req.file.originalname, projectName(req.query.project));
       res.status(202).json({ job });
     } finally { await rm(req.file.path, { force: true }); }
   });
@@ -124,6 +126,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   app.post('/api/registry/:id/reprocess', rateLimit({ windowMs: 10 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Слишком много повторных обработок. Повторите через 10 минут.' } }), async (req, res) => { res.status(202).json({ job: await registry.reprocess(String(req.params.id)) }); });
   app.delete('/api/registry/:id', async (req, res) => {
     if (!await registry.delete(String(req.params.id))) throw new UserError('Реестр не найден.', 404);
+    await history.forgetFile(String(req.params.id));
     res.json({ ok: true });
   });
   app.get('/api/history', async (req, res) => {

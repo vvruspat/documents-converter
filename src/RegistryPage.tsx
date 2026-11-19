@@ -1,8 +1,9 @@
+import { Catalog } from './Catalog';
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { Check, Download, FileText, LoaderCircle, RotateCcw, Trash2, Upload } from 'lucide-react';
 
 type RegistryJob = {
-  id: string; originalName: string; resultName: string;
+  id: string; project?: string; originalName: string; resultName: string;
   status: 'queued' | 'working' | 'done' | 'error';
   pages: number; processedPages: number; recordCount: number; createdAt: string; error?: string;
 };
@@ -18,6 +19,9 @@ async function api(url: string, init?: RequestInit) {
 }
 
 export function RegistryPage() {
+  const [project, setProject] = useState(() => new URLSearchParams(location.search).get('project')?.slice(0,120) || 'Общий');
+  const [tab, setTab] = useState<'upload' | 'catalog'>(() => new URLSearchParams(location.search).get('view') === 'catalog' ? 'catalog' : 'upload');
+  const selected = project.trim() || 'Общий';
   const input = useRef<HTMLInputElement>(null);
   const [jobs, setJobs] = useState<RegistryJob[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -46,7 +50,7 @@ export function RegistryPage() {
     setError(''); setUploading(true); setUploadPercent(null);
     const body = new FormData(); body.append('pdf', file);
     const request = new XMLHttpRequest();
-    request.open('POST', '/api/registry');
+    request.open('POST', '/api/registry?project=' + encodeURIComponent(selected));
     request.upload.onprogress = event => { if (event.lengthComputable) setUploadPercent(Math.round(event.loaded / event.total * 100)); };
     request.onload = () => {
       setUploading(false); setUploadPercent(null);
@@ -81,8 +85,13 @@ export function RegistryPage() {
     finally { setAction(''); }
   }
 
+  const projectJobs = jobs.filter(job => (job.project || 'Общий') === selected);
   return <section className="registry-page">
-    <div className="registry-intro"><h1>Реестр документов из PDF</h1><p>Загрузите скан с документами. Мы составим Excel-реестр в порядке страниц PDF.</p></div>
+    <div className="registry-intro"><h1>Документы проекта</h1></div>
+    <label className="project-label">Проект<input list="registry-projects" maxLength={120} disabled={uploading} value={project} onChange={e => setProject(e.target.value)} /></label>
+    <datalist id="registry-projects">{[...new Set(jobs.map(job => job.project || 'Общий'))].map(p => <option key={p}>{p}</option>)}</datalist>
+    <div className="catalog-tabs"><button aria-pressed={tab === 'upload'} onClick={() => setTab('upload')}>Загрузки и Excel</button><button aria-pressed={tab === 'catalog'} onClick={() => setTab('catalog')}>Каталог и комплекты</button></div>
+    {tab === 'catalog' ? <Catalog key={selected} project={selected} revision={jobs.filter(j => (j.project || 'Общий') === selected && j.status === 'done').map(j => j.id).join(',')} /> : <>
     {error && <p className="error-banner" role="alert">{error}</p>}
     <input ref={input} className="visually-hidden" type="file" accept=".pdf,application/pdf" aria-label="Выбрать PDF для реестра" onChange={event => select(event.target.files)} />
     <div className={`dropzone registry-dropzone ${dragging ? 'dragging' : ''}`} onDragOver={event => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={drop}>
@@ -92,8 +101,8 @@ export function RegistryPage() {
       <p>{uploading ? `Загрузка${uploadPercent === null ? '…' : `: ${uploadPercent}%`}` : 'Размер файла и число страниц не ограничены приложением'}</p>
     </div>
     <p className="registry-note">Обработка большого PDF может занять время. Можно закрыть страницу и вернуться позже. Подсвеченные ячейки в Excel требуют проверки по оригиналу. Пересоздание повторно распознаёт все страницы.</p>
-    <div className="registry-list"><div className="list-heading"><span>Реестры <span className="muted">{jobs.length}</span></span></div>
-      {jobs.length === 0 ? <p className="empty-history">Здесь появятся ваши PDF и готовые реестры.</p> : jobs.map(job => <div className="job registry-job" key={job.id}>
+    <div className="registry-list"><div className="list-heading"><span>Реестры <span className="muted">{projectJobs.length}</span></span></div>
+      {projectJobs.length === 0 ? <p className="empty-history">Здесь появятся ваши PDF и готовые реестры.</p> : projectJobs.map(job => <div className="job registry-job" key={job.id}>
         <FileText className="file-icon" size={22} strokeWidth={1.5} />
         <div className="job-body"><div className="job-name" title={job.originalName}>{job.originalName}</div>
           <div className={`job-status ${job.status === 'error' ? 'error-text' : ''}`} aria-live="polite">
@@ -109,5 +118,6 @@ export function RegistryPage() {
         </div>
       </div>)}
     </div>
+    </>}
   </section>;
 }

@@ -4,3 +4,13 @@
 
 .registry-page{max-width:850px;margin:0 auto 60px}.registry-intro{margin-bottom:24px}.registry-intro h1{font-size:25px;font-weight:550;letter-spacing:-.7px;margin:0 0 7px}.registry-intro p,.registry-note{font-size:12px;line-height:1.6;color:var(--muted);margin:0}.registry-dropzone{min-height:235px}.registry-dropzone h2{font-size:18px;font-weight:550;margin:0}.registry-note{margin:14px 0 30px}.registry-list{margin-top:20px}.registry-job .job-body{min-width:0}.registry-job .job-action{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:135px;width:auto}.registry-progress{display:block;width:100%;height:5px;margin-top:9px;accent-color:#4b8450}.registry-page .error-banner{margin-bottom:15px}.registry-page .empty-history{padding:28px 0;text-align:left}.registry-job .job-status{white-space:normal;line-height:1.45}.registry-job .button.compact{white-space:nowrap}
 @media(max-width:700px){.registry-intro h1{font-size:21px}.registry-job .job-action{min-width:90px;flex-wrap:wrap}.registry-dropzone h2{font-size:16px}}
+
+.project-label, .catalog label { display: grid; gap: .35rem; font-size: .9rem; }
+.catalog input, .project-label input, .catalog select { padding: .55rem; border: 1px solid #bec8d0; border-radius: 6px; font: inherit; min-width: 0; }
+.catalog-tabs, .catalog fieldset { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1rem 0; }
+.catalog-tabs button, .catalog button { padding: .5rem .8rem; border: 1px solid #b7c3cd; background: white; color: #193148; border-radius: 6px; cursor: pointer; }
+.catalog-tabs button[aria-pressed=true] { background: #193148; color: white; }
+.catalog details { border-bottom: 1px solid #d8dfe5; padding: .7rem 0; overflow-wrap: anywhere; }
+.catalog summary { cursor: pointer; }
+.catalog h2 { margin: 1.5rem 0 .7rem; font-size: 1.2rem; }
+.catalog form > button { margin: .5rem .3rem .25rem 0; }

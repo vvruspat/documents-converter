@@ -7,14 +7,19 @@ import { promisify } from 'node:util';
 import ExcelJS from 'exceljs';
 import sharp from 'sharp';
 import { z } from 'zod';
+import { kinds, type CatalogRow } from '../shared/catalog.js';
 import { safeFilename } from './history.js';
 import { UserError } from './recognize.js';
 
 const run = promisify(execFile);
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const catalogFields = z.object({
+  kind: z.enum(kinds), material: z.string().max(500), batch: z.string().max(200),
+  work: z.string().max(500), floor: z.string().max(120), section: z.string().max(120),
+});
 const documentSchema = z.object({
   name: z.string().max(500), number: z.string().max(200), date: z.string().max(120),
-  organization: z.string().max(300), uncertain: z.boolean(), attachmentOfPrevious: z.boolean().optional(),
+  organization: z.string().max(300), uncertain: z.boolean(), catalog: catalogFields.optional(), attachmentOfPrevious: z.boolean().optional(),
 }).strict();
 const continuationSchema = z.object({
   number: z.string().max(200), date: z.string().max(120), organization: z.string().max(300),
@@ -29,7 +34,7 @@ const pageSchema = z.object({
 }).strict();
 type PageResult = z.infer<typeof pageSchema>;
 export type RegistryJob = {
-  id: string; originalName: string; resultName: string; status: 'queued' | 'working' | 'done' | 'error';
+  id: string; project?: string; originalName: string; resultName: string; status: 'queued' | 'working' | 'done' | 'error';
   pages: number; processedPages: number; recordCount: number; createdAt: string; error?: string;
 };
 type RegistryRow = { name: string; number: string; date: string; organization: string; first: number; last: number; uncertain: boolean };
@@ -55,7 +60,7 @@ Set continuesPrevious=true only if this page is physically part of the previous 
 For each new document return a precise Russian title. For an act of concealed works, include the actual work from "К освидетельствованию предъявлены следующие работы" in the name. For a material certificate or passport, include the product or material when legible. The name "Акт освидетельствования скрытых работ" alone is insufficient if the work is visible. Set attachmentOfPrevious=true only for an explicit appendix to the preceding act, such as "Приложение № 1 к АОСР"; the appendix starts its own register row and does not extend the preceding act's page range.
 Return the document's OWN number, issue date and issuing organization. For a certificate use the full "Регистрационный номер", not a short printed blank number in the corner. For a passport use "Паспорт изделия №" or "Шильд №", which may be on its last page. For an act use the contractor named as the performer of the works ("лицо, выполнившее работы" or "составили настоящий акт"), not the customer, designer or construction supervisor. For a signed materials register use its own "Приложение №" and the signing organization. Do not substitute a certificate number, standard, drawing reference or date merely cited in a document's body.
 If the document continues from the preceding page, put its OWN number, issue date and issuer found on THIS page in continuation; otherwise leave continuation fields empty. These fields supplement the preceding document, not a new row. For date use DD.MM.YYYY when the issue date is unambiguous; keep validity periods as text "с DD.MM.YYYY по DD.MM.YYYY". Preserve Cyrillic, original numbering, meaningful subject, product model and location. Use an empty string when a field is absent or unreadable, and uncertain=true if any field is unclear. Do not invent missing facts.
-On the first page set object to the construction project name from the PDF heading and section to the work or section named in the first document; otherwise use empty strings. Return only JSON.`;
+For catalog, classify the document by kind. Extract its material, batch identifier, work, floor and section only when explicitly stated for this document. Use empty strings for unknown values. On the first page set object to the construction project name from the PDF heading and section to the work or section named in the first document; otherwise use empty strings. Return only JSON.`;
 const responseSchema = {
   type: 'object', additionalProperties: false, required: ['blank', 'continuesPrevious', 'object', 'section', 'continuation', 'documents'],
   properties: {
@@ -65,8 +70,10 @@ const responseSchema = {
       required: ['number', 'date', 'organization'],
       properties: { number: { type: 'string' }, date: { type: 'string' }, organization: { type: 'string' } } },
     documents: { type: 'array', items: { type: 'object', additionalProperties: false,
-      required: ['name', 'number', 'date', 'organization', 'uncertain', 'attachmentOfPrevious'],
-      properties: { name: { type: 'string' }, number: { type: 'string' }, date: { type: 'string' },
+      required: ['name', 'number', 'date', 'organization', 'uncertain', 'attachmentOfPrevious', 'catalog'],
+      properties: { catalog: { type: 'object', additionalProperties: false, required: Object.keys(catalogFields.shape),
+        properties: { kind: { type: 'string', enum: kinds }, ...Object.fromEntries(['material','batch','work','floor','section'].map(key => [key, { type: 'string' }])) } },
+        name: { type: 'string' }, number: { type: 'string' }, date: { type: 'string' },
         organization: { type: 'string' }, uncertain: { type: 'boolean' }, attachmentOfPrevious: { type: 'boolean' } },
     } },
   },
@@ -165,7 +172,7 @@ export function registryRows(pages: PageResult[]): RegistryRow[] {
     if (result.blank && !result.documents.length && !result.continuesPrevious) continue;
     if (result.continuesPrevious && rows.length) {
       const previous = rows[rows.length - 1];
-      if (!result.documents.length) previous.last = page;
+      if (!result.documents.length || result.documents.every(doc => !doc.attachmentOfPrevious)) previous.last = page;
       if (result.continuation) {
         // A document's own serial number or issue date can appear only on its final page.
         for (const field of ['number', 'date', 'organization'] as const) {
@@ -293,12 +300,47 @@ export class RegistryQueue {
   list() { return [...this.jobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(job => ({ ...job })); }
   get(id: string) { return idPattern.test(id) ? this.jobs.get(id) : undefined; }
   resultPath(id: string) { if (!idPattern.test(id)) throw new UserError('Реестр не найден.', 404); return path.join(this.jobDir(id), 'result.xlsx'); }
-  async create(uploadPath: string, originalName: string): Promise<RegistryJob> {
+  sourcePath(id: string) {
+    if (!this.get(id)) throw new UserError('Исходный PDF не найден.', 404);
+    return path.join(this.jobDir(id), 'source.pdf');
+  }
+  async pageTexts(job: RegistryJob) {
+    const texts: string[] = [];
+    for (let page = 1; page <= job.pages; page++) {
+      try { texts.push(await readFile(path.join(this.jobDir(job.id), 'pages', page + '.txt'), 'utf8')); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; texts.push(''); }
+    }
+    return texts;
+  }
+  async excerpt(id: string, first: number, last: number) {
+    if (!this.get(id)) return '';
+    const texts = [];
+    for (const page of new Set([first, last])) {
+      try { texts.push((await readFile(path.join(this.jobDir(id), 'pages', page + '.txt'), 'utf8')).slice(0, 3000)); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
+    return texts.join('\n');
+  }
+  async catalogRows(job: RegistryJob): Promise<CatalogRow[]> {
+    const pages: PageResult[] = [];
+    for (let i = 1; i <= job.pages; i++) {
+      pages.push(pageSchema.parse(JSON.parse(await readFile(path.join(this.jobDir(job.id), 'pages', i + '.json'), 'utf8'))));
+    }
+    const offsets = new Map<number, number>();
+    return registryRows(pages).map(row => {
+      const offset = offsets.get(row.first) ?? 0;
+      offsets.set(row.first, offset + 1);
+      const details = pages[row.first - 1].documents[offset]?.catalog;
+      const kind = kinds.find(value => row.name.toLowerCase().startsWith(value.toLowerCase())) ?? 'Другой документ';
+      return { kind, batch: '', material: '', work: '', section: '', floor: '', ...details, ...row };
+    });
+  }
+  async create(uploadPath: string, originalName: string, project = 'Общий'): Promise<RegistryJob> {
     await this.ready;
     if (!this.options.apiKey) throw new UserError('Добавьте OPENROUTER_API_KEY в настройках приложения Coolify.', 503);
     const pages = await pdfPages(uploadPath);
     const id = randomUUID(), name = safeFilename(originalName);
-    const job: RegistryJob = { id, originalName: name, resultName: `${name.replace(/\.pdf$/i, '') || 'Документ'} — реестр.xlsx`,
+    const job: RegistryJob = { id, project, originalName: name, resultName: `${name.replace(/\.pdf$/i, '') || 'Документ'} — реестр.xlsx`,
       status: 'queued', pages, processedPages: 0, recordCount: 0, createdAt: new Date().toISOString() };
     const dir = this.jobDir(id);
     await mkdir(path.join(dir, 'pages'), { recursive: true, mode: 0o700 });
@@ -326,7 +368,7 @@ export class RegistryQueue {
     const temporary = path.join(this.uploadDirectory, `${randomUUID()}.upload`);
     try {
       await link(path.join(this.jobDir(id), 'source.pdf'), temporary);
-      return await this.create(temporary, sourceJob.originalName);
+      return await this.create(temporary, sourceJob.originalName, sourceJob.project);
     } finally { await rm(temporary, { force: true }); }
   }
   async delete(id: string): Promise<boolean> {
@@ -366,6 +408,7 @@ export class RegistryQueue {
       try { result = pageSchema.parse(JSON.parse(await readFile(file, 'utf8'))); }
       catch {
         const { image, ocr } = await renderPage(source, page, path.join(dir, 'page.jpg'));
+        await writeFile(path.join(dir, 'pages', page + '.txt'), ocr, { mode: 0o600 });
         result = await recognizePage(image, ocr, page, previous, this.options.apiKey, this.options.model, this.options.fetcher ?? fetch);
         const temp = `${file}.${randomUUID()}.tmp`;
         await writeFile(temp, JSON.stringify(result), { mode: 0o600 });
