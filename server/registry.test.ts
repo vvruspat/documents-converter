@@ -49,6 +49,23 @@ test('separates an act from its appendix and fills appendix metadata from the ac
   assert.equal(rows[1].organization, 'ООО «ЗЕТТА»');
 });
 
+test('review follows unreadable fields across pages and ignores blanks and legacy blanket flags', () => {
+  const doc = { name: 'Акт', number: '', date: '', organization: '', uncertain: true };
+  const start = { blank: false, continuesPrevious: false, documents: [doc] };
+  assert.deepEqual(registryRows([start])[0].reviewFields, []);
+  const first = { ...start, documents: [{ ...doc, reviewFields: ['number', 'organization'] as ('number' | 'organization')[] }] };
+  const tail = { blank: false, continuesPrevious: true, documents: [], continuation: { number: '11', date: '12.11.2026', organization: '' } };
+  const [row] = registryRows([first, tail]);
+  assert.deepEqual(row.reviewFields, ['organization']);
+  assert.equal(row.uncertain, true);
+  assert.equal(registryRows([first, { ...tail, continuation: { ...tail.continuation, organization: 'ООО Строй' } }])[0].uncertain, false);
+  assert.deepEqual(registryRows([{ ...start, documents: [{ ...doc, name: 'Паспорт — [неразборчиво]' }] }])[0].reviewFields, ['name']);
+  assert.deepEqual(registryRows([{ ...start, documents: [] }])[0].reviewFields, ['name']);
+  const [confident] = registryRows([{...start, documents: [{...doc, number:'25'}]}, {...tail, continuation: {...tail.continuation, number:'2?', reviewFields:['number']}}]);
+  assert.equal(confident.number, '25');
+  assert.deepEqual(confident.reviewFields, []);
+});
+
 test('normalizes clear document dates without changing date ranges', () => {
   for (const value of ['09.02.2026', '2026-02-09', '09 февраля 2026 г.']) {
     assert.equal((excelDate(value) as Date).toISOString().slice(0, 10), '2026-02-09');
@@ -67,8 +84,8 @@ test('creates a register from scanned PDF pages and persists the completed resul
     const payload = JSON.parse(String(init?.body));
     const page = Number(payload.messages[1].content[0].text.match(/PDF page (\d+)/)[1]);
     const data = page === 1
-      ? { blank: false, continuesPrevious: false, continuation: { number: '', date: '', organization: '' }, documents: [{ name: 'Паспорт изделия', number: 'ЕАЭС RU C-RU.001', date: '', organization: 'ООО Строй', uncertain: true }] }
-      : { blank: false, continuesPrevious: true, continuation: { number: '059880', date: '26.03.2026', organization: 'ООО Гладиум' }, documents: [] };
+      ? { blank: false, continuesPrevious: false, continuation: { number: '', date: '', organization: '' }, documents: [{ name: 'Паспорт изделия', number: 'ЕАЭС RU C-RU.001', date: '', organization: 'ООО Строй', reviewFields: ['organization'] }] }
+      : { blank: false, continuesPrevious: true, continuation: { number: '059880', date: '26.03.2026', organization: 'ООО Гладиум', reviewFields: ['organization'] }, documents: [] };
     return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(data) } }] }), { status: 200 });
   };
   try {
@@ -102,6 +119,8 @@ test('creates a register from scanned PDF pages and persists the completed resul
     assert.ok(sheet.getCell('D8').value instanceof Date);
     assert.equal(sheet.getCell('D8').numFmt, 'dd.mm.yyyy');
     assert.equal(sheet.getCell('E8').value, 'ООО Гладиум');
+    assert.equal((sheet.getCell('E8').fill as ExcelJS.FillPattern).fgColor?.argb, 'FFFFF0C2');
+    for (const col of ['B', 'C', 'D']) assert.notEqual((sheet.getCell(col+'8').fill as ExcelJS.FillPattern)?.fgColor?.argb, 'FFFFF0C2');
     assert.equal(sheet.getCell('F8').value, 2);
     assert.equal(sheet.getCell('G8').value, 1);
     assert.equal(sheet.getCell('I8').value, 2);

@@ -154,3 +154,7 @@
   .scan-dialog header small { display:none; }.scan-controls label { max-width:100%; }
   .scan-pair,.scan-headings { gap:3px; }.scan-dialog footer { gap:4px; }
 }
+
+.review-value, .scan-issues button.review-value { background:#fff0c2; color:#59400b; border-radius:3px; padding:1px 4px; }
+.scan-issues { display:flex; align-items:center; flex-wrap:wrap; gap:6px; font-size:13px; }
+.scan-issues button.review-value { border:1px solid #d6ad5a; padding:3px 7px; }

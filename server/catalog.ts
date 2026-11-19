@@ -1,16 +1,18 @@
 import { createHash } from 'node:crypto';
-import { normalized, type Card, type CatalogRow } from '../shared/catalog.js';
+import { fieldsToReview, normalized, type Card, type CatalogRow } from '../shared/catalog.js';
 
 export type IndexedFile = { job: string; file: string; rows: CatalogRow[] };
 export function catalogCards(files: IndexedFile[]): Card[] {
   const cards = new Map<string, Card>();
   for (const { job, file, rows } of files) {
-    rows.forEach(({ first, last, ...fields }, index) => {
+    rows.forEach(({ first, last, reviewFields: reported, ...fields }, index) => {
       // Only collapse complete, confident, identical descriptions inside one project.
       const signature = fields.uncertain || !fields.number || !fields.date || !fields.organization
         ? [job, index] : Object.entries(fields).filter(([key]) => key !== 'uncertain').sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => [key, normalized(String(value))]);
       const id = createHash('sha256').update(JSON.stringify(signature)).digest('hex');
-      const card = cards.get(id) ?? { ...fields, id, sources: [] };
+      // Keep historical IDs (including confirmed kit matches) when interpreting legacy flags.
+      const reviewFields = fieldsToReview(fields, reported);
+      const card = cards.get(id) ?? { ...fields, uncertain: reviewFields.length > 0, reviewFields, id, sources: [] };
       card.sources.push({ index, job, file, first, last });
       cards.set(id, card);
     });

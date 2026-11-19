@@ -52,21 +52,22 @@ export function ScanComparison({ card, close, preferredJob }: { card: Card; clos
   const marks = useMemo(() => {
     const marks: { key: Field; first: number; last: number; lines: ReturnType<typeof fieldLines> }[] = [];
     if (!layout) return marks;
-    for (const key of Object.keys(fieldLabels) as Field[]) {
-      if ((field && field !== key) || !card[key]) continue;
+    for (const key of new Set([...card.reviewFields, ...Object.keys(fieldLabels) as Field[]])) {
+      if (field && field !== key) continue;
+      if (!card[key] && !card.reviewFields.includes(key)) continue;
       const quote = layout.evidence.find((item) => item.field === key)?.quote;
       const range = (quote && locate(layout.words, quote)) || (!layout.shared && locate(layout.words, card[key], key));
       if (!range) continue;
       const [first, last] = range;
       if (marks.some((mark) => first <= mark.last && last >= mark.first)) continue;
-      marks.push({ key, first, last, lines: fieldLines(layout.words.slice(first, last + 1), card[key]) });
+      marks.push({ key, first, last, lines: card[key] ? fieldLines(layout.words.slice(first, last + 1), card[key]) : [] });
     }
     return marks;
   }, [card, field, layout]);
   useEffect(() => {
     if (!field || !marks.length || !layout || !left.current) return;
     const pane = left.current;
-    const first = marks[0].lines[0];
+    const first = layout.words[marks[0].first];
     const scale = (pane.querySelector('svg')?.clientWidth ?? 0) / layout.width;
     if (first && scale)
       pane.scrollTo({ left: first.x * scale - pane.clientWidth / 2, top: first.y * scale - pane.clientHeight / 2 });
@@ -126,22 +127,19 @@ export function ScanComparison({ card, close, preferredJob }: { card: Card; clos
             <option value="">Все реквизиты</option>
             {Object.entries(fieldLabels).map(([k, label]) => (
               <option key={k} value={k}>
-                {label}
+                {label}{card.reviewFields.includes(k as Field) ? ' · проверить' : ''}
               </option>
             ))}
           </select>
         </label>
-        {field && <b>{value || 'Не указано'}</b>}
-        {!field && (
-          <small>
-            {marks.length
-              ? 'Жёлтым выделены реквизиты реестра, найденные на листе.'
-              : layout
-              ? 'На этом листе места реквизитов не подтверждены.'
-              : 'Ищем реквизиты на листе…'}
-          </small>
-        )}
-        {layout && value && !marks.length && <small>Место на листе не подтверждено</small>}
+        {field && <b className={card.reviewFields.includes(field) ? 'review-value' : undefined}>
+          {value || (card.reviewFields.includes(field) ? 'Не удалось прочитать' : 'Не указано')}
+        </b>}
+        {card.reviewFields.length > 0 && <div className="scan-issues" aria-label="Реквизиты для проверки">
+          <span>Проверить</span>
+          {card.reviewFields.map(key => <button className="review-value" key={key} onClick={() => setField(key)}>{fieldLabels[key]}</button>)}
+        </div>}
+        {layout && field && (value || card.reviewFields.includes(field)) && !marks.length && <small>Место на листе не подтверждено</small>}
       </div>
       <div className="scan-headings">
         <strong>Скан</strong>
@@ -165,7 +163,8 @@ export function ScanComparison({ card, close, preferredJob }: { card: Card; clos
               >
                 {!i && <image href={base + '/image?page=' + page} width={layout.width} height={layout.height} />}
                 {layout.words.map((w, j) => {
-                  const highlighted = marks.some((mark) => j >= mark.first && j <= mark.last);
+                  const mark = marks.find((mark) => j >= mark.first && j <= mark.last);
+                  const suspect = mark && card.reviewFields.includes(mark.key);
                   return (
                     <g key={j} onMouseEnter={() => setHover(j)}>
                       <rect
@@ -173,10 +172,10 @@ export function ScanComparison({ card, close, preferredJob }: { card: Card; clos
                         y={w.y}
                         width={w.w}
                         height={w.h}
-                        fill={hover === j ? '#53bbcd' : highlighted ? '#ffbe32' : 'transparent'}
-                        opacity={hover === j || highlighted ? 0.43 : 1}
+                        fill={suspect ? '#ffbe32' : hover === j || (field && mark) ? '#53bbcd' : 'transparent'}
+                        opacity={0.43}
                       />
-                      {i === 1 && !highlighted && (
+                      {i === 1 && !mark?.lines.length && (
                         <text
                           x={w.x}
                           y={w.y + w.h * 0.86}

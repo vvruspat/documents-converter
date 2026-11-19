@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ArrowUpRight, BookOpen, ChevronLeft, ChevronRight, ClipboardList, FileBadge, FileText, FolderOpen, ListFilter, Search, Shapes, X } from 'lucide-react';
+import { fieldLabels, type Field } from '../shared/scan';
 import { ScanComparison } from './ScanComparison';
 import { normalized, type Card, type Source } from '../shared/catalog';
 
@@ -16,6 +17,10 @@ export function SourceLink({ source }: { source: Source }) {
 function ScanShortcut({ source }: { source: Source }) {
   return <a className="scan-shortcut" target="_blank" rel="noreferrer" href={`/api/registry/${source.job}/source#page=${source.first}`}>
     <span>{source.file}</span><small>Лист {source.first}{source.last !== source.first && '–' + source.last} ↗</small></a>;
+}
+function shownField(card: Card, field: Field) {
+  if (card.reviewFields.includes(field)) return <mark className="review-value" title={fieldLabels[field] + ' · проверить'}>{card[field] || 'Не удалось прочитать'}</mark>;
+  return card[field] || '—';
 }
 const perPage = 20;
 export function DocumentList({ cards, loading }: { cards: Card[]; loading: boolean }) {
@@ -36,8 +41,8 @@ export function DocumentList({ cards, loading }: { cards: Card[]; loading: boole
       <label className="kind-filter"><FolderOpen size={16}/><select aria-label="Исходный PDF" value={volume} onChange={e=>{setVolume(e.target.value);setPage(0);}}><option value="">Все PDF</option>{[...volumes].map(([id,file])=><option key={id} value={id}>{file}</option>)}</select></label></div>
     <div className="library-switch"><button aria-pressed={!review} onClick={()=>{setReview(false);setPage(0);}}>Все документы <b>{cards.length}</b></button><button aria-pressed={review} onClick={()=>{setReview(true);setPage(0);}}>Требуют проверки <b>{cards.filter(c=>c.uncertain).length}</b></button></div>
     {filtered.length > 0 ? <><table className="document-table"><thead><tr><th>Документ</th><th>Организация</th><th>Дата</th><th className="scan-column">Исходник</th><th aria-label="Открыть"/></tr></thead><tbody>
-      {filtered.slice(start,start+perPage).map(c=><tr key={c.id} onClick={()=>setOpened(c)}><td><div className="document-title"><DocumentIcon kind={c.kind}/><div><button onClick={e=>{e.stopPropagation();setOpened(c);}}>{c.name}</button><small>{[c.kind,c.number].filter(Boolean).join(' · ')}</small></div></div></td>
-        <td>{c.organization || '—'}</td><td>{c.date || '—'}</td><td className="scan-column" onClick={e=>e.stopPropagation()}><ScanShortcut source={c.sources.find(s=>s.job===volume) ?? c.sources[0]}/></td><td><ChevronRight size={15}/></td></tr>)}</tbody></table>
+      {filtered.slice(start,start+perPage).map(c=><tr key={c.id} onClick={()=>setOpened(c)}><td><div className="document-title"><DocumentIcon kind={c.kind}/><div><button onClick={e=>{e.stopPropagation();setOpened(c);}}>{shownField(c, 'name')}</button><small>{c.kind}{(c.number || c.reviewFields.includes('number')) && <> · {shownField(c, 'number')}</>}</small></div></div></td>
+        <td>{shownField(c, 'organization')}</td><td>{shownField(c, 'date')}</td><td className="scan-column" onClick={e=>e.stopPropagation()}><ScanShortcut source={c.sources.find(s=>s.job===volume) ?? c.sources[0]}/></td><td><ChevronRight size={15}/></td></tr>)}</tbody></table>
       <footer className="library-pager"><span>{start+1}–{Math.min(start+perPage,filtered.length)} из {filtered.length}</span><button aria-label="Предыдущая страница" disabled={!current} onClick={()=>setPage(current-1)}><ChevronLeft size={16}/></button><button aria-label="Следующая страница" disabled={start+perPage>=filtered.length} onClick={()=>setPage(current+1)}><ChevronRight size={16}/></button></footer></> :
       <div className="library-empty"><FolderOpen/><p>{loading ? 'Загружаем документы…' : cards.length ? 'Документы не найдены' : 'В проекте пока нет документов'}</p>{(query || kind || review || volume) && <button onClick={()=>{setKind('');setQuery('');setVolume('');setReview(false);setPage(0);}}><X size={14}/> Сбросить фильтры</button>}</div>}
     {opened && <ScanComparison preferredJob={volume} card={opened} close={()=>setOpened(null)}/>}

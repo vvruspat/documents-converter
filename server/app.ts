@@ -120,7 +120,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
     const job = registry.get(String(req.params.id));
     if (!job) throw new UserError('Реестр не найден.', 404);
     if (job.status !== 'done') throw new UserError('Реестр ещё не готов.', 409);
-    res.download(registry.resultPath(job.id), job.resultName, error => { if (error && !res.headersSent) next(new UserError('Файл не найден.', 404)); });
+    res.download(await registry.downloadPath(job), job.resultName, { dotfiles: 'allow' }, error => { if (error && !res.headersSent) next(new UserError('Файл не найден.', 404)); });
   });
   app.post('/api/registry/:id/retry', async (req, res) => { res.json({ job: await registry.retry(String(req.params.id)) }); });
   app.post('/api/registry/:id/reprocess', rateLimit({ windowMs: 10 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Слишком много повторных обработок. Повторите через 10 минут.' } }), async (req, res) => { res.status(202).json({ job: await registry.reprocess(String(req.params.id)) }); });
