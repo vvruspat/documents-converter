@@ -380,9 +380,24 @@ test('indexes old jobs, groups matching sources and resolves a kit when its docu
     for (const [i, record] of contents.entries()) await writeFile(path.join(dir, 'pages', (i+1)+'.json'), JSON.stringify({ documents: [record], blank: false, continuesPrevious: false }));
     return id;
   }
-  const qa = async () => Response.json({ choices: [{ message: { content: JSON.stringify({ answers: [{ index: 0, text: 'Паспорт №373.' }] }) } }] });
+  const models = {recognition:'test/document-reader',chat:'test/archive-chat',regions:'test/region-reader:free'};
+  const qa: typeof fetch = async (url, init) => {
+    const body = JSON.parse(String(init?.body));
+    if (body.model === models.recognition) return mock(url,init);
+    assert.equal(body.model,models.chat);
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ answers: [{ index: 0, text: 'Паспорт №373.' }] }) } }] });
+  };
   const appForJobs = () => createApp({ ...config, historyStore, dataDir: settings.directory }, qa as typeof fetch);
   let app = appForJobs();
+  await request(app).get('/api/settings/models').expect(401);
+  await request(app).put('/api/settings/models').send(models).expect(401);
+  await request(app).put('/api/settings/models').set('Cookie',cookie()).send({...models,chat:'invalid model'}).expect(400);
+  await request(app).put('/api/settings/models').set('Cookie',cookie()).send(models).expect(200);
+  app = appForJobs();
+  assert.deepEqual((await request(app).get('/api/settings/models').set('Cookie',cookie()).expect(200)).body,models);
+  assert.equal((await request(app).get('/api/config').set('Cookie',cookie()).expect(200)).body.model, models.recognition);
+  await request(app).post('/api/recognize').set('Cookie',cookie()).attach('image',await image(),'doc.jpg').expect(200);
+  await request(app).post('/api/recognize').set('Cookie',cookie()).attach('image',await pdfWithPages(1),'doc.pdf').expect(200);
   const params = { project }, req = { kind: 'Паспорт', number: '373', batch: '', organization: 'ДСК' };
   await request(app).post('/api/catalog/sets').query(params).set('Cookie', cookie()).send({ name: 'Панели', requirements: [req] }).expect(201);
   const empty = await request(app).get('/api/catalog').query(params).set('Cookie', cookie()).expect(200);

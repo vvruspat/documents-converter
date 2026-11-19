@@ -1,3 +1,4 @@
+import { ModelSettings } from './models.js';
 import { detectedRegion, detectionFormat, recognizeRegion, regionBox } from './regions.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -48,7 +49,7 @@ const pageSchema = z.object({
 }).strict();
 type PageResult = z.infer<typeof pageSchema>;
 export type RegistryJob = {
-  id: string; project?: string; originalName: string; resultName: string; status: 'queued' | 'working' | 'done' | 'error';
+  id: string; project?: string; models?: {recognition: string; regions: string}; originalName: string; resultName: string; status: 'queued' | 'working' | 'done' | 'error';
   pages: number; processedPages: number; recordCount: number; createdAt: string; error?: string;
 };
 type RegistryRow = { name: string; number: string; date: string; organization: string; first: number; last: number; uncertain: boolean; reviewFields: Field[] };
@@ -265,12 +266,14 @@ async function writeRegistry(filename: string, sourceName: string, pages: PageRe
 }
 
 export class RegistryQueue {
+  readonly models: ModelSettings;
   readonly uploadDirectory: string;
   readonly ready: Promise<void>;
   private directory: string;
   private jobs = new Map<string, RegistryJob>();
   private running = false;
   constructor(private options: { directory: string; apiKey: string; model: string; regionModel?: string; fetcher?: typeof fetch }) {
+    this.models = new ModelSettings(options.directory, { recognition: options.model, chat: options.model, regions: options.regionModel || options.model });
     this.directory = path.join(path.resolve(options.directory), 'registry-jobs');
     this.uploadDirectory = path.join(this.directory, 'uploads');
     mkdirSync(this.uploadDirectory, { recursive: true, mode: 0o700 });
@@ -368,7 +371,8 @@ export class RegistryQueue {
     if (!this.options.apiKey) throw new UserError('Добавьте OPENROUTER_API_KEY в настройках приложения Coolify.', 503);
     const pages = await pdfPages(uploadPath);
     const id = randomUUID(), name = safeFilename(originalName);
-    const job: RegistryJob = { id, project, originalName: name, resultName: `${name.replace(/\.pdf$/i, '') || 'Документ'} — реестр.xlsx`,
+    const { recognition, regions } = await this.models.get();
+    const job: RegistryJob = { id, project, models: { recognition, regions }, originalName: name, resultName: `${name.replace(/\.pdf$/i, '') || 'Документ'} — реестр.xlsx`,
       status: 'queued', pages, processedPages: 0, recordCount: 0, createdAt: new Date().toISOString() };
     const dir = this.jobDir(id);
     await mkdir(path.join(dir, 'pages'), { recursive: true, mode: 0o700 });
@@ -415,6 +419,7 @@ export class RegistryQueue {
     if (!job) return;
     this.running = true;
     try {
+      if (!job.models) job.models = { recognition:this.options.model, regions:this.options.regionModel || this.options.model };
       job.status = 'working'; await this.save(job);
       await this.process(job);
       job.status = 'done'; delete job.error;
@@ -440,7 +445,7 @@ export class RegistryQueue {
         const image = await readFile(scan.image);
         const ocr = pageText(layout.words);
         await writeFile(path.join(dir, 'pages', page + '.txt'), ocr, { mode: 0o600 });
-        result = await recognizePage(image, ocr, page, previous, this.options.apiKey, this.options.model, this.options.fetcher ?? fetch);
+        result = await recognizePage(image, ocr, page, previous, this.options.apiKey, job.models!.recognition, this.options.fetcher ?? fetch);
         const temp = `${file}.${randomUUID()}.tmp`;
         await writeFile(temp, JSON.stringify(result), { mode: 0o600 });
         await rename(temp, file);
@@ -448,7 +453,7 @@ export class RegistryQueue {
       for (const region of result.regions ?? []) {
         if (region.document === -1 ? !result.continuesPrevious || !previous : region.document >= result.documents.length) continue;
         await recognizeRegion(dir, page, region.document, region, 'auto', {
-          ...this.options, model: this.options.regionModel || this.options.model
+          ...this.options, model: job.models!.regions
         });
       }
       pages.push(result);

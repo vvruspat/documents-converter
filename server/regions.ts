@@ -6,7 +6,7 @@ import { readFile, readdir, writeFile, rename, mkdir, rm } from 'node:fs/promise
 import path from 'node:path';
 import sharp from 'sharp';
 import { z } from 'zod';
-import { regionKinds, type Region, type RegionBox } from '../shared/regions.js';
+import { regionKinds, type Region, type RegionReading, type RegionBox } from '../shared/regions.js';
 import { UserError } from './recognize.js';
 import { scanPage } from './scan.js';
 
@@ -178,7 +178,7 @@ export async function regionsFor(dir: string, page: number, document: number): P
   return records.sort((a, b) => a.top - b.top || a.left - b.left || a.id.localeCompare(b.id));
 }
 
-const inFlight = new Map<string, Promise<Region>>();
+const inFlight = new Map<string, {model:string; task:Promise<Region>}>();
 export async function recognizeRegion(
   dir: string,
   page: number,
@@ -193,12 +193,21 @@ export async function recognizeRegion(
   const root = folder(dir, page, document),
     file = path.join(root, id + '.json');
   const active = inFlight.get(file);
-  if (active) return active;
+  if (active) {
+    if (active.model === config.model) return active.task;
+    await active.task.catch(() => undefined);
+    return recognizeRegion(dir,page,document,box,source,config,retry);
+  }
   async function process(): Promise<Region> {
     let originalSource = source;
+    let previous: RegionReading[] = [];
     try {
       const saved: Region = JSON.parse(await readFile(file, 'utf8'));
-      if (!retry || saved.status !== 'error') return saved;
+      if (!retry) return saved;
+      const readings = [{model:saved.model, status:saved.status, text:saved.text}, ...(saved.previous ?? [])];
+      previous = readings.filter(item => item.model !== config.model);
+      const cached = readings.find(item => item.model === config.model);
+      if (cached && cached.status !== 'error') return {...saved, ...cached, previous};
       originalSource = saved.source;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
@@ -209,20 +218,23 @@ export async function recognizeRegion(
     await mkdir(root, { recursive: true, mode: 0o700 });
     let reading: Pick<Region, 'status' | 'text'>;
     try {
-      const crop = await cropPage(dir, page, scan, box);
-      const preview = path.join(root, id + '.png'),
-        temp = preview + '.' + randomUUID();
-      try {
-        await writeFile(temp, crop, { mode: 0o600 });
-        await rename(temp, preview);
-      } finally {
-        await rm(temp, { force: true });
+      const preview = path.join(root, id + '.png');
+      let crop: Buffer;
+      try { crop = await readFile(preview); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        crop = await cropPage(dir, page, scan, box);
+        const temp = preview + '.' + randomUUID();
+        try {
+          await writeFile(temp, crop, { mode: 0o600 });
+          await rename(temp, preview);
+        } finally { await rm(temp, { force: true }); }
       }
       reading = await readCrop(crop, box, config);
     } catch {
       reading = { status: 'error', text: '' };
     }
-    const record = { ...box, id, source: originalSource, model: config.model, ...reading };
+    const record = { ...box, id, source: originalSource, model: config.model, ...reading, previous };
     const temporary = file + '.' + randomUUID();
     try {
       await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
@@ -233,6 +245,6 @@ export async function recognizeRegion(
     return record;
   }
   const task = process().finally(() => inFlight.delete(file));
-  inFlight.set(file, task);
+  inFlight.set(file, {model:config.model, task});
   return task;
 }

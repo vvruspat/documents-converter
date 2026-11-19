@@ -77,7 +77,9 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   app.post('/api/logout', (_req, res) => { res.clearCookie('dc_session', { path: '/', httpOnly: true, secure: config.production, sameSite: 'strict' }); res.json({ ok: true }); });
   app.use('/api', (req, res, next) => { if (!authenticated(req)) { res.status(401).json({ error: 'Войдите в сервис, чтобы продолжить.' }); return; } next(); });
   installCatalog(app, registry, history, config, fetcher);
-  app.get('/api/config', (_req, res) => { res.json({ configured: Boolean(config.apiKey), model: config.model, maxFileBytes: MAX_FILE_BYTES, maxPdfPages: MAX_PDF_PAGES, supportedMimeTypes: [...IMAGE_MIMES, 'application/pdf'] }); });
+  app.get('/api/settings/models', async (_req, res) => { res.json(await registry.models.get()); });
+  app.put('/api/settings/models', async (req, res) => { res.json(await registry.models.save(req.body)); });
+  app.get('/api/config', async (_req, res) => { res.json({ configured: Boolean(config.apiKey), model: (await registry.models.get()).recognition, maxFileBytes: MAX_FILE_BYTES, maxPdfPages: MAX_PDF_PAGES, supportedMimeTypes: [...IMAGE_MIMES, 'application/pdf'] }); });
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_BYTES, files: 1, fields: 0, parts: 1 } });
   const registryUpload = multer({ storage: multer.diskStorage({ destination: registry.uploadDirectory, filename: (_req, _file, callback) => callback(null, `${randomUUID()}.upload`) }), limits: { files: 1, fields: 0, parts: 1 } });
   app.post('/api/recognize', rateLimit({ windowMs: 10 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Достигнут лимит: 20 распознаваний за 10 минут. Подождите немного.' } }), (req, _res, next) => {
@@ -89,9 +91,10 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
     if (activeRecognitions >= 2) throw new UserError('Сервер уже обрабатывает два документа. Повторите чуть позже.', 429);
     activeRecognitions++;
     try {
+      const {recognition} = await registry.models.get();
       const document = pdf
-        ? await recognizePdf(req.file.buffer, safeFilename(req.file.originalname), config.apiKey, config.model, fetcher)
-        : await recognizeImage(await normalizeImage(req.file.buffer), config.apiKey, config.model, fetcher);
+        ? await recognizePdf(req.file.buffer, safeFilename(req.file.originalname), config.apiKey, recognition, fetcher)
+        : await recognizeImage(await normalizeImage(req.file.buffer), config.apiKey, recognition, fetcher);
       if (!document.tables.length) throw new UserError(document.warnings[0] || 'В документе не найдено таблиц.', 422);
       const input = exportSchema.parse({ documents: [{ name: safeFilename(req.file.originalname), document }] });
       const result = await exportExcel(input);

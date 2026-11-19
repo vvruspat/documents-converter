@@ -207,18 +207,25 @@ test('reads individual cropped regions, isolates documents sharing a page and re
   const detected = [{...seal,document:0},{...secondSeal,document:0},{...stamp,document:1}];
   let pageCalls = 0, cropCalls = 0, failStamp = true;
   const dimensions: number[][] = [];
+  const inputs: string[] = [];
+  const initial = {recognition:'test/pages',chat:'test/chat',regions:'test/crop'};
+  const alternate = {recognition:'test/pages-next',chat:'test/chat-next',regions:'test/crop-next:free'};
+  let queue: RegistryQueue;
   const fetcher: typeof fetch = async (_url,init) => {
     const body = JSON.parse(String(init?.body));
     let data;
     if (body.response_format.json_schema.name === 'registry_page') {
       pageCalls++;
+      assert.equal(body.model,initial.recognition);
+      if (pageCalls === 1) await queue.models.save(alternate);
       data = {blank:pageCalls===2,continuesPrevious:false,documents:pageCalls===1?[doc,doc]:[],
         regions:pageCalls===1?[...detected,detected[0],{...seal,document:999},{...seal,document:0,right:-5}]:[]};
     } else {
       cropCalls++;
-      assert.equal(body.model,'crop-model');
+      assert.equal(body.model,cropCalls <= 5 ? initial.regions : alternate.regions);
       const content = body.messages[1].content;
       assert.equal(content.length,1);
+      inputs.push(content[0].image_url.url);
       const bytes = Buffer.from(content[0].image_url.url.split(',')[1],'base64');
       const meta = await sharp(bytes).metadata();
       assert.equal(meta.format,'png');
@@ -230,7 +237,8 @@ test('reads individual cropped regions, isolates documents sharing a page and re
   };
   try {
     await copyFile(path.resolve('server/fixtures/scanned-two-pages.pdf'),source);
-    const queue = new RegistryQueue({directory,model:'page-model',regionModel:'crop-model',apiKey:'test',fetcher});
+    queue = new RegistryQueue({directory,model:'page-model',regionModel:'crop-model',apiKey:'test',fetcher});
+    await queue.models.save(initial);
     const job = await queue.create(source,'Том.pdf');
     for (let i=0;i<150 && !['done','error'].includes(queue.get(job.id)!.status);i++) await new Promise(r=>setTimeout(r,100));
     assert.equal(queue.get(job.id)?.status,'done',queue.get(job.id)?.error);
@@ -248,6 +256,7 @@ test('reads individual cropped regions, isolates documents sharing a page and re
     assert.equal((await supertest(app).get(base+'1/layout?page=1')).body.regions[0].status,'error');
     await supertest(app).post(base+'0/regions?page=2').send(seal).expect(404);
     await supertest(app).post(base+'0/regions?page=1').send({...seal,right:50}).expect(400);
+    await queue.models.save(initial);
     failStamp=false;
     const retry=await supertest(app).post(base+'1/regions?page=1').send(stamp).expect(200);
     assert.equal(retry.body.region.status,'partial');
@@ -260,5 +269,15 @@ test('reads individual cropped regions, isolates documents sharing a page and re
     assert.equal((await supertest(app).get(base+'1/layout?page=1')).body.regions.length,2);
     await supertest(app).post(base+'1/regions?page=1').send(manual).expect(200);
     assert.equal(cropCalls,5);
+    await supertest(app).put('/api/settings/models').send(alternate).expect(200);
+    const switched = await supertest(app).post(base+'1/regions?page=1').send(manual).expect(200);
+    assert.equal(switched.body.region.model,alternate.regions);
+    assert.equal(switched.body.region.previous[0].model,initial.regions);
+    assert.equal(inputs[4],inputs[5]);
+    await supertest(app).put('/api/settings/models').send(initial).expect(200);
+    const cached = await supertest(app).post(base+'1/regions?page=1').send(manual).expect(200);
+    assert.equal(cached.body.region.model,initial.regions);
+    assert.equal(cached.body.region.previous[0].model,alternate.regions);
+    assert.equal(cropCalls,6);
   } finally { await rm(directory,{recursive:true,force:true}); }
 });

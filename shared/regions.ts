@@ -7,10 +7,13 @@ export const regionLabels: Record<RegionKind, string> = {
   handwriting: 'Рукописный текст',
 };
 export type RegionBox = { kind: RegionKind; left: number; top: number; right: number; bottom: number };
-export type Region = RegionBox & {
-  id: string;
-  source: 'auto' | 'manual';
+export type RegionReading = {
   model: string;
   status: 'read' | 'partial' | 'unreadable' | 'error';
   text: string;
+};
+export type Region = RegionBox & RegionReading & {
+  id: string;
+  source: 'auto' | 'manual';
+  previous?: RegionReading[];
 };

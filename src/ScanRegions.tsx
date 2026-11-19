@@ -1,3 +1,4 @@
+import { ModelSettingsButton } from './ModelSettings';
 import { useRef, useState, type PointerEvent, type ReactNode } from 'react';
 import { regionKinds, regionLabels, type Region, type RegionBox, type RegionKind } from '../shared/regions';
 
@@ -234,11 +235,13 @@ export function ScanRegions({ width, height, image, endpoint, saved, children }:
             {active?.status === 'partial' && <small>Часть текста не удалось прочитать.</small>}
             {active?.status === 'unreadable' && <p>Текст не удалось прочитать.</p>}
             {active?.status === 'error' && <p>Распознавание не завершилось.</p>}
-            {(draft || active?.status === 'error') && (
-              <button disabled={busy} onClick={() => recognize(box)}>
-                {busy ? 'Распознаём…' : draft ? 'Распознать фрагмент' : 'Повторить распознавание'}
-              </button>
-            )}
+            {active && <p className="reading-model">Модель · {active.model}</p>}
+            {!!active?.previous?.length && <details><summary>Другие модели ({active.previous.length})</summary>
+              {active.previous.map(r=><div key={r.model}><strong>{r.model}</strong><p>{r.text || (r.status==='error' ? 'Ошибка распознавания' : 'Текст не удалось прочитать')}</p></div>)}
+            </details>}
+            <div className="reading-actions"><button disabled={busy} onClick={() => recognize(box)}>
+              {busy ? 'Распознаём…' : draft ? 'Распознать фрагмент' : 'Проверить выбранной моделью'}
+            </button><ModelSettingsButton compact/></div>
             {error && <p role="alert">{error}</p>}
           </div>
           <button
