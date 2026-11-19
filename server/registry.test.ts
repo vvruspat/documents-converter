@@ -196,3 +196,69 @@ test('accepts a PDF larger than the ordinary converter limit', async () => {
     assert.match(result.headers['content-type'], /spreadsheetml/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test('reads individual cropped regions, isolates documents sharing a page and retries failed crops independently', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'registry-regions-'));
+  const source = path.join(directory, 'input.pdf');
+  const doc = {name:'Сертификат', number:'42', date:'', organization:'', reviewFields:[]};
+  const seal = {kind:'seal',left:100,top:300,right:300,bottom:450};
+  const secondSeal = {...seal,left:600,right:800};
+  const stamp = {...seal,kind:'stamp',top:460,bottom:520};
+  const detected = [{...seal,document:0},{...secondSeal,document:0},{...stamp,document:1}];
+  let pageCalls = 0, cropCalls = 0, failStamp = true;
+  const dimensions: number[][] = [];
+  const fetcher: typeof fetch = async (_url,init) => {
+    const body = JSON.parse(String(init?.body));
+    let data;
+    if (body.response_format.json_schema.name === 'registry_page') {
+      pageCalls++;
+      data = {blank:pageCalls===2,continuesPrevious:false,documents:pageCalls===1?[doc,doc]:[],
+        regions:pageCalls===1?[...detected,detected[0],{...seal,document:999},{...seal,document:0,right:-5}]:[]};
+    } else {
+      cropCalls++;
+      assert.equal(body.model,'crop-model');
+      const content = body.messages[1].content;
+      assert.equal(content.length,1);
+      const bytes = Buffer.from(content[0].image_url.url.split(',')[1],'base64');
+      const meta = await sharp(bytes).metadata();
+      assert.equal(meta.format,'png');
+      dimensions.push([meta.width,meta.height]);
+      if (failStamp && body.messages[0].content.includes('stamp imprint')) return new Response('',{status:503});
+      data = {status:'partial',text:'ООО [неразборчиво]'};
+    }
+    return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify(data)}}]});
+  };
+  try {
+    await copyFile(path.resolve('server/fixtures/scanned-two-pages.pdf'),source);
+    const queue = new RegistryQueue({directory,model:'page-model',regionModel:'crop-model',apiKey:'test',fetcher});
+    const job = await queue.create(source,'Том.pdf');
+    for (let i=0;i<150 && !['done','error'].includes(queue.get(job.id)!.status);i++) await new Promise(r=>setTimeout(r,100));
+    assert.equal(queue.get(job.id)?.status,'done',queue.get(job.id)?.error);
+    assert.equal(pageCalls,2);
+    assert.equal(cropCalls,3);
+    const app = createApp({historyStore:{catalogFiles:async()=>[]} as unknown as ConversionStore,registryQueue:queue,model:'page-model',regionModel:'crop-model',apiKey:'test',production:false,password:'',sessionSecret:''},fetcher);
+    const base='/api/registry/'+job.id+'/documents/';
+    const {body:layout}=await supertest(app).get(base+'0/layout?page=1').expect(200);
+    assert.equal(layout.regions.length,2);
+    assert.notEqual(layout.regions[0].id,layout.regions[1].id);
+    assert.equal(layout.regions[0].text,'ООО [неразборчиво]');
+    const png = await supertest(app).get(base+'0/image?page=1&region='+layout.regions[0].id).expect(200);
+    assert.equal((await sharp(png.body).metadata()).width, dimensions[0][0]);
+    assert.deepEqual(dimensions[0],[Math.ceil(layout.width*2*.3)-Math.floor(layout.width*2*.1),Math.ceil(layout.height*2*.45)-Math.floor(layout.height*2*.3)]);
+    assert.equal((await supertest(app).get(base+'1/layout?page=1')).body.regions[0].status,'error');
+    await supertest(app).post(base+'0/regions?page=2').send(seal).expect(404);
+    await supertest(app).post(base+'0/regions?page=1').send({...seal,right:50}).expect(400);
+    failStamp=false;
+    const retry=await supertest(app).post(base+'1/regions?page=1').send(stamp).expect(200);
+    assert.equal(retry.body.region.status,'partial');
+    assert.equal(retry.body.region.source,'auto');
+    const manual={...stamp,kind:'handwriting'};
+    const [a,b]=await Promise.all([1,2].map(()=>supertest(app).post(base+'1/regions?page=1').send(manual).expect(200)));
+    assert.equal(a.body.region.id,b.body.region.id);
+    assert.equal(a.body.region.source,'manual');
+    assert.equal(cropCalls,5);
+    assert.equal((await supertest(app).get(base+'1/layout?page=1')).body.regions.length,2);
+    await supertest(app).post(base+'1/regions?page=1').send(manual).expect(200);
+    assert.equal(cropCalls,5);
+  } finally { await rm(directory,{recursive:true,force:true}); }
+});

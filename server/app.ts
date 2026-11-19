@@ -16,14 +16,14 @@ import { exportExcel } from './excel.js';
 import { ConversionStore, safeFilename } from './history.js';
 import { RegistryQueue } from './registry.js';
 
-export type AppConfig = { apiKey: string; model: string; password: string; sessionSecret: string; production: boolean; trustProxy?: number; commit?: string; dataDir?: string; databaseUrl?: string; historyStore?: ConversionStore; registryQueue?: RegistryQueue };
+export type AppConfig = { apiKey: string; model: string; regionModel?: string; password: string; sessionSecret: string; production: boolean; trustProxy?: number; commit?: string; dataDir?: string; databaseUrl?: string; historyStore?: ConversionStore; registryQueue?: RegistryQueue };
 
 export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   const app = express();
   if (config.production && (config.password.length < 6 || config.sessionSecret.length < 32)) throw new Error('Production requires APP_PASSWORD (at least 6 characters) and SESSION_SECRET (at least 32 characters).');
   const history = config.historyStore ?? new ConversionStore({ directory: config.dataDir ?? path.resolve('.local/data'), connectionString: config.databaseUrl ?? '' });
   app.locals.conversionStore = history;
-  const registry = config.registryQueue ?? new RegistryQueue({ directory: config.dataDir ?? path.resolve('.local/data'), apiKey: config.apiKey, model: config.model, fetcher });
+  const registry = config.registryQueue ?? new RegistryQueue({ directory: config.dataDir ?? path.resolve('.local/data'), apiKey: config.apiKey, model: config.model, regionModel: config.regionModel, fetcher });
   app.locals.registryQueue = registry;
   let activeRecognitions = 0;
   app.disable('x-powered-by');

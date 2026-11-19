@@ -27,6 +27,7 @@ function readWords(tsv: string, width: number, height: number) {
 }
 export async function preparePageImage(target: string) {
   let image = await readFile(target);
+  let rotation = 0;
   try {
     const { stdout } = await run('tesseract', [target, 'stdout', '--psm', '0'], {
       timeout: 30_000,
@@ -36,6 +37,7 @@ export async function preparePageImage(target: string) {
     if (angle && Number(stdout.match(/^Orientation confidence:\s*([\d.]+)/m)?.[1]) >= 2.5) {
       image = await sharp(image).rotate(angle).jpeg({ quality: 90 }).toBuffer();
       await writeFile(target, image);
+      rotation = angle;
     }
   } catch {
     /* Sparse pages can lack a reliable orientation. */
@@ -51,7 +53,7 @@ export async function preparePageImage(target: string) {
   } catch {
     /* The normalized image is available even without OCR. */
   }
-  return { image, ocr: pageText(words), layout: { width, height, words } satisfies ScanLayout };
+  return { image, ocr: pageText(words), layout: { width, height, rotation, words } satisfies ScanLayout };
 }
 
 export function pageText(words: ScanWord[]) {

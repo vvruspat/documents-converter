@@ -158,3 +158,17 @@
 .review-value, .scan-issues button.review-value { background:#fff0c2; color:#59400b; border-radius:3px; padding:1px 4px; }
 .scan-issues { display:flex; align-items:center; flex-wrap:wrap; gap:6px; font-size:13px; }
 .scan-issues button.review-value { border:1px solid #d6ad5a; padding:3px 7px; }
+.region-tools { display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-size:13px; }
+.region-tools select { max-width:180px; }
+.region-frame { cursor:pointer; }
+.region-frame rect { fill:#255b9509; stroke:#315f9a; }
+.region-frame text { fill:#234b79; stroke:white; stroke-width:4px; paint-order:stroke; font-weight:650; }
+.region-draft { fill:#316da518; stroke:#315f9a; stroke-width:2px; stroke-dasharray:5 3; }
+.region-reading { display:flex; align-items:flex-start; gap:10px; padding:8px; border:1px solid #bcc9d5; border-radius:6px; max-height:30vh; overflow:auto; }
+.region-reading > svg,.region-preview { flex:0 0 30%; width:30%; height:100px; background:#f1f4f4; }
+.region-reading div { flex:1; min-width:0; }
+.region-reading p { white-space:pre-wrap; overflow-wrap:anywhere; margin:4px 0; font-size:14px; }
+.region-reading div button { display:block; margin-top:5px; }
+
+.region-preview img { width:100%; height:100%; object-fit:contain; }
+.region-frame[data-status='partial'] rect,.region-frame[data-status='unreadable'] rect { stroke:#9b7014; fill:#ffbe3217; }

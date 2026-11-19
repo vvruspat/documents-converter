@@ -1,9 +1,11 @@
+import { ScanRegions } from './ScanRegions';
+import type { Region } from '../shared/regions';
 import { useEffect, useMemo, useRef, useState, type UIEvent } from 'react';
 import { ChevronLeft, ChevronRight, Download, ExternalLink, Minus, Plus, X } from 'lucide-react';
 import type { Card } from '../shared/catalog';
 import { fieldLabels, fieldLines, locate, type Field, type ScanLayout } from '../shared/scan';
 
-type Layout = ScanLayout & { shared: boolean; evidence: { field: Field; quote: string }[] };
+type Layout = ScanLayout & { regions: Region[]; shared: boolean; evidence: { field: Field; quote: string }[] };
 export function ScanComparison({ card, close, preferredJob }: { card: Card; close: () => void; preferredJob: string }) {
   const dialog = useRef<HTMLDialogElement>(null),
     left = useRef<HTMLDivElement>(null),
@@ -141,11 +143,14 @@ export function ScanComparison({ card, close, preferredJob }: { card: Card; clos
         </div>}
         {layout && field && (value || card.reviewFields.includes(field)) && !marks.length && <small>Место на листе не подтверждено</small>}
       </div>
+      {layout ? (
+        <ScanRegions key={key} saved={layout.regions ?? []} width={layout.width} height={layout.height}
+          image={base + '/image?page=' + page} endpoint={base + '/regions?page=' + page}>
+        {overlay => <>
       <div className="scan-headings">
         <strong>Скан</strong>
         <strong>Данные реестра и распознанный текст</strong>
       </div>
-      {layout ? (
         <div className="scan-pair">
           {['scan', 'text'].map((side, i) => (
             <div
@@ -206,10 +211,12 @@ export function ScanComparison({ card, close, preferredJob }: { card: Card; clos
                       </text>
                     ))
                   )}
+                {overlay(i === 0)}
               </svg>
             </div>
           ))}
-        </div>
+        </div></>}
+        </ScanRegions>
       ) : (
         <p role="status" className="scan-wait">
           {error || 'Готовим страницу для сравнения…'}{' '}

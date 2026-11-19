@@ -2,7 +2,8 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { safeFilename } from './history.js';
 import { scanPage, saveDocument } from './scan.js';
-import type { Express } from 'express';
+import { regionPreview, regionsFor, recognizeRegion, regionBox } from './regions.js';
+import type { Express, Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { assess, kinds } from '../shared/catalog.js';
@@ -20,7 +21,7 @@ const textField = z.string().trim().max(300);
 const setInput = z.object({
   name: textField.min(1), requirements: z.array(z.object({ kind: z.enum(kinds), number: textField, batch: textField, organization: textField, section: textField.optional(), floor: textField.optional(), work: textField.optional() })).min(1).max(100),
 });
-export function installCatalog(app: Express, queue: RegistryQueue, db: ConversionStore, config: { model: string; apiKey: string }, fetcher: typeof fetch) {
+export function installCatalog(app: Express, queue: RegistryQueue, db: ConversionStore, config: { model: string; regionModel?: string; apiKey: string }, fetcher: typeof fetch) {
   const indexing = new Map<string, Promise<void>>();
   async function cards(project: string) {
     await queue.ready;
@@ -57,28 +58,54 @@ export function installCatalog(app: Express, queue: RegistryQueue, db: Conversio
     await db.confirm(project,id,position,card);
     res.json({ ok: true });
   });
-  app.get('/api/registry/:id/documents/:index/:asset', async (req,res) => {
+  async function documentSource(req: Request) {
     await queue.ready;
     const job = queue.get(String(req.params.id));
-    const index = Number(req.params.index), asset = String(req.params.asset);
-    if (job?.status !== 'done' || !Number.isSafeInteger(index) || index < 0 || !['pdf','layout','image'].includes(asset)) throw new UserError('Документ не найден.',404);
+    const index = Number(req.params.index);
+    if (job?.status !== 'done' || !Number.isSafeInteger(index) || index < 0) throw new UserError('Документ не найден.',404);
     const [indexed] = await db.catalogFiles(job.project ?? 'Общий',[job.id]);
     const rows = indexed?.rows ?? await queue.catalogRows(job);
     const row = rows[index];
     if (!row) throw new UserError('Документ не найден.',404);
     const dir = path.dirname(queue.sourcePath(job.id));
+    return {job, index, rows, row, dir};
+  }
+  function documentPage(req: Request, source: Awaited<ReturnType<typeof documentSource>>) {
+    const {row, rows, index} = source;
+    const page = Number(req.query.page);
+    if (!Number.isSafeInteger(page) || page < row.first || page > row.last) throw new UserError('Страница вне документа.',404);
+    const ordinal = page === row.first ? index - rows.findIndex(r => r.first === page) : -1;
+    return {page, ordinal};
+  }
+  app.post('/api/registry/:id/documents/:index/regions', rateLimit({windowMs:60_000,limit:20}), async (req,res) => {
+    const source = await documentSource(req);
+    const {page,ordinal} = documentPage(req, source);
+    const parsed = regionBox.safeParse(req.body);
+    if (!parsed.success) throw new UserError('Выделите область внутри листа.');
+    const region = await recognizeRegion(source.dir,page,ordinal,parsed.data,'manual',{
+      apiKey:config.apiKey, model:config.regionModel || config.model, fetcher
+    }, true);
+    res.json({region});
+  });
+  app.get('/api/registry/:id/documents/:index/:asset', async (req,res) => {
+    const asset = String(req.params.asset);
+    if (!['pdf','image','layout'].includes(asset)) throw new UserError('Файл не найден.',404);
+    const source = await documentSource(req);
+    const {job,index,rows,row,dir} = source;
     if (asset === 'pdf') {
       const filename = safeFilename([row.name,row.number].filter(Boolean).join(' ').replace(/[/:]/g,'-')).slice(0,100);
       res.download(await saveDocument(dir,index,row),filename + '.pdf',{ dotfiles:'allow' });
       return;
     }
-    const page = Number(req.query.page);
-    if (!Number.isSafeInteger(page) || page < row.first || page > row.last) throw new UserError('Страница вне документа.',404);
+    const {page,ordinal} = documentPage(req,source);
+    if (asset === 'image' && req.query.region !== undefined) {
+      res.type('png').sendFile(regionPreview(dir,page,ordinal,req.query.region),{dotfiles:'allow'});
+      return;
+    }
     const scan = await scanPage(dir,page);
     if (asset === 'image') { res.type('jpeg').sendFile(scan.image,{dotfiles:'allow'}); return; }
-    const ordinal = page === row.first ? index - rows.findIndex(r => r.first === page) : -1;
-    const evidence = await queue.evidence(job.id,page,ordinal);
-    res.json({ ...JSON.parse(await readFile(scan.layout,'utf8')), evidence,
+    const [evidence, regions] = await Promise.all([queue.evidence(job.id,page,ordinal), regionsFor(dir,page,ordinal)]);
+    res.json({ ...JSON.parse(await readFile(scan.layout,'utf8')), evidence, regions,
       shared:rows.some((r,i) => i !== index && r.first <= page && page <= r.last) });
   });
   app.get('/api/registry/:id/source', async (req, res) => {

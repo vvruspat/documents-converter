@@ -5,6 +5,7 @@ const port = Number(process.env.PORT ?? 3001);
 const app = createApp({
   apiKey: process.env.OPENROUTER_API_KEY ?? '',
   model: process.env.OPENROUTER_MODEL ?? 'google/gemini-2.5-flash',
+  regionModel: process.env.OPENROUTER_REGION_MODEL,
   password: process.env.APP_PASSWORD ?? '', sessionSecret: process.env.SESSION_SECRET ?? '',
   production, trustProxy: Number(process.env.TRUST_PROXY ?? 1), commit: process.env.SOURCE_COMMIT, dataDir: process.env.DATA_DIR, databaseUrl: process.env.DATABASE_URL,
 });
