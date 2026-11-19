@@ -46,6 +46,21 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
       - name: Verify production Docker image
         run: docker build --tag documents-converter:check .
+      - name: Verify text rendering with a standard PDF font in the runtime image
+        run: |
+          docker run --rm -i documents-converter:check node --input-type=module <<'JS'
+          import { PDFDocument } from 'pdf-lib';
+          import { writeFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          import assert from 'node:assert/strict';
+          import sharp from 'sharp';
+          const pdf = await PDFDocument.create();
+          pdf.addPage().drawText('Certificate QA-317', { x: 40, y: 600, size: 24 });
+          writeFileSync('/tmp/certificate.pdf', await pdf.save());
+          execFileSync('pdftoppm', ['-singlefile', '-png', '/tmp/certificate.pdf', '/tmp/preview']);
+          const stats = await sharp('/tmp/preview.png').stats();
+          assert.ok(stats.channels[0].min < 50, 'Rendered page contains no dark text');
+          JS
 
   deploy:
     needs: check
