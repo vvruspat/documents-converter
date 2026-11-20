@@ -117,7 +117,7 @@ async function recognizePage(image: Buffer, page: number, previous: string, apiK
       const response = await fetcher('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'X-Title': 'Documents Converter' },
-        body: JSON.stringify({ model, ...await reasoningFor(model, 'ocr'), temperature: 0, provider: { require_parameters: true },
+        body: JSON.stringify({ model, ...await reasoningFor(model, 'ocr'), provider: { require_parameters: true },
           messages: [
             { role: 'system', content: pagePrompt },
             { role: 'user', content: [

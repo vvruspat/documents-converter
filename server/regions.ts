@@ -119,7 +119,6 @@ async function readCrop(buffer: Buffer, box: RegionBox, config: Config) {
     body: JSON.stringify({
       model: config.model,
       ...await reasoningFor(config.model, 'ocr'),
-      temperature: 0,
       messages: [
         {
           role: 'system',

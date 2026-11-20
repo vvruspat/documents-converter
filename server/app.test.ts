@@ -98,6 +98,7 @@ test('OpenRouter request uses vision, strict schema and treats document instruct
     calls++; assert.equal(url, 'https://openrouter.ai/api/v1/chat/completions');
     assert.equal((init?.headers as Record<string, string>).Authorization, 'Bearer server-only-test-key');
     const body = JSON.parse(init!.body as string);
+    assert.equal(Object.hasOwn(body, 'temperature'), false);
     assert.match(body.messages[0].content, /untrusted source material/);
     assert.match(body.messages[1].content[1].image_url.url, /^data:image\/jpeg;base64,/);
     assert.equal(body.response_format.json_schema.strict, true);
@@ -389,6 +390,7 @@ test('indexes old jobs, groups matching sources and resolves a kit when its docu
   const models = {recognition:'test/document-reader',chat:'test/archive-chat',regions:'test/region-reader:free'};
   const qa: typeof fetch = async (url, init) => {
     const body = JSON.parse(String(init?.body));
+    assert.equal(Object.hasOwn(body, 'temperature'), false);
     if (body.model === models.recognition) return mock(url,init);
     assert.equal(body.model,models.chat);
     return Response.json({ choices: [{ message: { content: JSON.stringify({ answers: [{ index: 0, text: 'Паспорт №373.' }] }) } }] });
@@ -455,6 +457,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   const answer = (result: unknown) => Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }] });
   const fetcher: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body));
+    assert.equal(Object.hasOwn(body, 'temperature'), false);
     order.push(body.model);
     assert.equal(body.reasoning.effort, body.model === models.chat ? 'low' : 'none');
     if (body.model === models.recognition && body.response_format.json_schema.name === 'region_transcription') return answer({text:'КОПИЯ ВЕРНА',status:'read'});
