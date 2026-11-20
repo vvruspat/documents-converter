@@ -15,6 +15,14 @@ import { createApp } from './app.js';
 import type { ConversionStore } from './history.js';
 import { RegistryQueue, excelDate, registryRows } from './registry.js';
 
+test.mock.method(globalThis, 'fetch', async (url: string) => {
+  assert.equal(url, 'https://openrouter.ai/api/v1/models');
+  const data = ['test/pages', 'test/crop'].map(id => ({
+    id, reasoning: { supported_efforts: ['low', 'none'], mandatory: false },
+  }));
+  return Response.json({ data });
+});
+
 async function waitForJob(queue: RegistryQueue, id: string) {
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
@@ -261,7 +269,8 @@ test('reads individual cropped regions, isolates documents sharing a page and re
         regions:pageCalls===1?[...detected,detected[0],{...seal,document:999},{...seal,document:0,right:-5}]:[]};
     } else {
       cropCalls++;
-      assert.equal(body.model,cropCalls <= 5 ? initial.regions : alternate.regions);
+      assert.equal(body.model,cropCalls === 6 ? alternate.regions : initial.regions);
+      assert.equal(body.reasoning?.effort, body.model === initial.regions ? 'none' : undefined);
       activeReads++;
       peakReads = Math.max(peakReads, activeReads);
       if (activeReads === 2) firstPair.resolve();
@@ -297,7 +306,7 @@ test('reads individual cropped regions, isolates documents sharing a page and re
     const png = await supertest(app).get(base+'0/image?page=1&region='+layout.regions[0].id).expect(200);
     const meta = await sharp(png.body).metadata();
     assert.ok(inputs.includes('data:image/png;base64,' + png.body.toString('base64')));
-    assert.deepEqual([meta.width,meta.height],[Math.ceil(layout.width*2*.3)-Math.floor(layout.width*2*.1),Math.ceil(layout.height*2*.45)-Math.floor(layout.height*2*.3)]);
+    assert.deepEqual([meta.width,meta.height],[Math.ceil(layout.width*2*.33)-Math.floor(layout.width*2*.07),Math.ceil(layout.height*2*.473)-Math.floor(layout.height*2*.277)]);
     assert.equal((await supertest(app).get(base+'1/layout?page=1')).body.regions[0].status,'error');
     await supertest(app).post(base+'0/regions?page=2').send(seal).expect(404);
     await supertest(app).post(base+'0/regions?page=1').send({...seal,right:50}).expect(400);
@@ -324,5 +333,26 @@ test('reads individual cropped regions, isolates documents sharing a page and re
     assert.equal(cached.body.region.model,initial.regions);
     assert.equal(cached.body.region.previous[0].model,alternate.regions);
     assert.equal(cropCalls,6);
+
+    // A pre-padding archive can be viewed as-is and upgraded by retrying the same box and model.
+    const old = layout.regions[0];
+    const prefix = path.join(directory, 'registry-jobs', job.id, 'regions', '1', '0', old.id);
+    delete old.cropVersion;
+    await writeFile(prefix + '.json', JSON.stringify(old));
+    const oldPng = await sharp(png.body).resize(20, 20).png().toBuffer();
+    await writeFile(prefix + '.png', oldPng);
+    await rm(prefix + '.padded.png');
+    const preview = () => supertest(app).get(base+'0/image?page=1&region='+old.id).expect(200);
+    assert.deepEqual((await preview()).body, oldPng);
+    const refreshed = await supertest(app).post(base+'0/regions?page=1').send(seal).expect(200);
+    assert.equal(refreshed.body.region.id, old.id);
+    assert.equal(refreshed.body.region.cropVersion, 2);
+    assert.deepEqual((await preview()).body, png.body);
+    const edge = {...seal,left:0,top:0,right:100,bottom:100};
+    const clipped = await supertest(app).post(base+'0/regions?page=1').send(edge).expect(200);
+    assert.equal(clipped.body.region.status,'partial');
+    const edgeMeta = await sharp(Buffer.from(inputs.at(-1)!.split(',')[1],'base64')).metadata();
+    assert.deepEqual([edgeMeta.width,edgeMeta.height],[Math.ceil(layout.width*2*.115),Math.ceil(layout.height*2*.115)]);
+    assert.equal(cropCalls,8);
   } finally { await rm(directory,{recursive:true,force:true}); }
 });

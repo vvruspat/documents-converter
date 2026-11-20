@@ -1,3 +1,4 @@
+import { reasoningFor } from './reasoning.js';
 import { z } from 'zod';
 import { fieldsToReview, kinds, type CatalogRow } from '../shared/catalog.js';
 import { fieldLabels, type Field } from '../shared/scan.js';
@@ -27,16 +28,17 @@ export type DocumentFields = { row: CatalogRow; evidence: z.infer<typeof extract
 type InputPart = { page: number; title: string; text: string; regions: Pick<Region,'kind'|'status'|'text'|'id'|'pageReading'>[] };
 type Reader = { apiKey: string; model: string; fetcher?: typeof fetch };
 
-async function ask<T extends z.ZodType>(reader: Reader, schema: T, name: string, prompt: string, content: unknown, label: string, responseSchema: z.ZodType = schema): Promise<z.infer<T>> {
+async function ask<T extends z.ZodType>(reader: Reader, schema: T, name: 'registry_transcript' | 'registry_document_fields', prompt: string, content: unknown, label: string, responseSchema: z.ZodType = schema): Promise<z.infer<T>> {
   const format = z.toJSONSchema(responseSchema, { target: 'draft-7' });
   delete format.$schema;
+  const reasoning = await reasoningFor(reader.model, name === 'registry_transcript' ? 'ocr' : 'chat');
   let reason = '';
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const response = await (reader.fetcher ?? fetch)('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST', headers: { Authorization: 'Bearer ' + reader.apiKey, 'Content-Type': 'application/json' },
         signal: AbortSignal.timeout(150_000),
-        body: JSON.stringify({ model: reader.model, temperature: 0, provider: { require_parameters: true },
+        body: JSON.stringify({ model: reader.model, ...reasoning, temperature: 0, provider: { require_parameters: true },
           messages: [{ role: 'system', content: prompt }, { role: 'user', content }],
           response_format: { type: 'json_schema', json_schema: { name, strict: true, schema: format } } }),
       });

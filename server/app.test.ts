@@ -19,6 +19,14 @@ import { documentSchema, exportSchema, type ExtractedDocument } from '../shared/
 import { MAX_PDF_PAGES, MAX_FILE_BYTES } from '../shared/upload.js';
 import { ConversionStore, safeFilename, type StoreOptions } from './history.js';
 
+test.mock.method(globalThis, 'fetch', async (url: string) => {
+  assert.equal(url, 'https://openrouter.ai/api/v1/models');
+  const data = ['test/reader', 'test/detail', 'test/archive'].map(id => ({
+    id, reasoning: { supported_efforts: ['low', 'none'], mandatory: false },
+  }));
+  return Response.json({ data });
+});
+
 const databaseUrl = process.env.TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error('Set TEST_DATABASE_URL to a PostgreSQL test database before running tests.');
 const database = new Pool({ connectionString: databaseUrl, max: 2, connectionTimeoutMillis: 5000 });
@@ -262,7 +270,6 @@ test('missing JavaScript and CSS assets return an uncached 404 instead of SPA HT
   }
 });
 
-
 test('browser diagnostics work without login or JavaScript and distinguish legacy Edge from Chromium', async () => {
   const app = createApp(config);
   const agents = [
@@ -283,7 +290,6 @@ test('browser diagnostics work without login or JavaScript and distinguish legac
   assert.match(unknown.headers['content-type'], /^text\/plain/);
   assert.ok(unknown.text.includes('Браузер: не определён'));
 });
-
 
 async function pdfWithPages(count: number): Promise<Buffer> {
   const document = await PDFDocument.create();
@@ -450,6 +456,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   const fetcher: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body));
     order.push(body.model);
+    assert.equal(body.reasoning.effort, body.model === models.chat ? 'low' : 'none');
     if (body.model === models.recognition && body.response_format.json_schema.name === 'region_transcription') return answer({text:'КОПИЯ ВЕРНА',status:'read'});
     if (body.model === models.recognition) {
       const {page} = JSON.parse(body.messages[1].content[0].text);

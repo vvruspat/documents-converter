@@ -22,6 +22,8 @@ export function ScanRegions({ width, height, image, endpoint, saved, children }:
   const start = useRef<{ x: number; y: number } | null>(null);
   const pending = useRef(false);
 
+  const previewUrl = active ? image + '&region=' + active.id + '&cropVersion=' + (active.cropVersion ?? 1) : undefined;
+
   function open(region: Region) {
     setActive(region);
     setDraft(null);
@@ -198,12 +200,12 @@ export function ScanRegions({ width, height, image, endpoint, saved, children }:
           {active && active.status !== 'error' ? (
             <a
               className="region-preview"
-              href={image + '&region=' + active.id}
+              href={previewUrl}
               target="_blank"
               rel="noreferrer"
               title="Открыть вырезку в полном размере"
             >
-              <img src={image + '&region=' + active.id} alt="Фрагмент, переданный на распознавание" />
+              <img src={previewUrl} alt="Фрагмент, переданный на распознавание" />
             </a>
           ) : (
             <svg role="img" aria-label="Выбранный фрагмент скана" viewBox={[0, 0, b.width, b.height].join(' ')}>
