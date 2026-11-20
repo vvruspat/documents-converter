@@ -9,6 +9,7 @@ export const regionLabels: Record<RegionKind, string> = {
 export type RegionBox = { kind: RegionKind; left: number; top: number; right: number; bottom: number };
 export type RegionReading = {
   model: string;
+  cropVersion?: number;
   method?: 'page' | 'crop';
   status: 'read' | 'partial' | 'unreadable' | 'error';
   text: string;
