@@ -38,7 +38,7 @@ async function ask<T extends z.ZodType>(reader: Reader, schema: T, name: 'regist
       const response = await (reader.fetcher ?? fetch)('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST', headers: { Authorization: 'Bearer ' + reader.apiKey, 'Content-Type': 'application/json' },
         signal: AbortSignal.timeout(150_000),
-        body: JSON.stringify({ model: reader.model, ...reasoning, temperature: 0, provider: { require_parameters: true },
+        body: JSON.stringify({ model: reader.model, ...reasoning, provider: { require_parameters: true },
           messages: [{ role: 'system', content: prompt }, { role: 'user', content }],
           response_format: { type: 'json_schema', json_schema: { name, strict: true, schema: format } } }),
       });

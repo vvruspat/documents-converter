@@ -261,6 +261,7 @@ test('reads individual cropped regions, isolates documents sharing a page and re
   const fetcher: typeof fetch = async (_url,init) => {
     const body = JSON.parse(String(init?.body));
     let data;
+    assert.equal(Object.hasOwn(body, 'temperature'), false);
     if (body.response_format.json_schema.name === 'registry_page') {
       pageCalls++;
       assert.equal(body.model,initial.recognition);
