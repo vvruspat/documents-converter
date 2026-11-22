@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { RecordList, GroupTitle } from '../lists/RecordList';
+import { entryColumns, projectColumns } from './listColumns';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import {
   Home,
@@ -12,11 +14,9 @@ import {
   FileStack,
   Files,
   Folder,
-  FolderOpen,
   Layers3,
   LibraryBig,
   Plus,
-  Search,
   Settings2,
   Upload,
   Users,
@@ -324,17 +324,15 @@ function Workspace({
     [phase, setPhase] = useState(initial.rows.find((r) => r.kind === 'phase')?.id || ''),
     [tab, setTab] = useState<Kind>(() => {
       const section = new URLSearchParams(location.search).get('section');
-      return sections.find(kind => kind === section) || 'work';
+      return sections.find((kind) => kind === section) || 'work';
     });
-  const [query, setQuery] = useState(''),
-    [page, setPage] = useState(0),
-    [edit, setEdit] = useState<Entry | 'settings' | null>(null),
+  const [edit, setEdit] = useState<Entry | 'settings' | null>(null),
     [exporting, setExporting] = useState(false);
   const rows = project.rows.filter(
     (r) => r.kind === tab && (!['work', 'pack'].includes(tab) || r.links.phase?.includes(phase)),
   );
-  const result = rows.filter((r) => recordTitle(r).toLowerCase().includes(query.toLowerCase())),
-    current = Math.min(page, Math.max(0, Math.ceil(result.length / 25) - 1));
+  const columns = useMemo(() => entryColumns(project, tab), [project, tab]);
+  const scope = 'construction.' + project.id + '.' + tab;
   const incomingTemplates = project.rows.filter((r) => r.kind === 'template' && r.v.form === 'incoming');
   const [avkTemplate, setAvkTemplate] = useState('');
   const phases = project.rows.filter((r) => r.kind === 'phase'),
@@ -388,7 +386,14 @@ function Workspace({
       case 'pack':
         return 'Актов · ' + project.rows.filter((w) => w.kind === 'work' && w.links.pack?.includes(r.id)).length;
       default:
-        return [r.v.docType, r.v.number, r.v.date, r.file || 'Без оригинала'].filter(Boolean).join(' · ');
+        return [
+          r.v.docType?.trim() !== r.v.name?.trim() && r.v.docType,
+          r.v.number,
+          r.v.date,
+          r.file || 'Без оригинала',
+        ]
+          .filter(Boolean)
+          .join(' · ');
     }
   };
   return (
@@ -401,8 +406,6 @@ function Workspace({
         const url = new URL(location.href);
         url.searchParams.set('section', v);
         history.replaceState(null, '', url);
-        setPage(0);
-        setQuery('');
       }}
     >
       <AppShell
@@ -417,7 +420,6 @@ function Workspace({
               value={phase}
               onChange={(e) => {
                 setPhase(e.target.value);
-                setPage(0);
               }}
             >
               {phases.map((r) => (
@@ -528,57 +530,44 @@ function Workspace({
               </a>
             </div>
           )}
-          {tab === 'standard' ? (
-            <StandardsBrowser rows={rows} edit={setEdit} />
-          ) : (
-            <>
-              <label className={s.search}>
-                <Search size={16} />
-                <input
-                  aria-label="Поиск записей"
-                  placeholder="Поиск по названию или номеру"
-                  value={query}
-                  onChange={(e) => {
-                    setQuery(e.target.value);
-                    setPage(0);
-                  }}
-                />
-              </label>
-              {result.slice(current * 25, current * 25 + 25).map((r) => (
-                <button className={s.record} key={r.id} onClick={() => setEdit(r)}>
-                  <span>
-                    <strong>{r.v.name}</strong>
-                    <small>{rowDetails(r)}</small>
-                  </span>
-                  <ChevronRight size={16} />
-                </button>
-              ))}
-              {!result.length && (
-                <div className={s.empty}>
-                  <FolderOpen size={30} />
-                  <h3>{query ? 'Совпадений нет' : 'Пока нет записей'}</h3>
-                  {!query && (
-                    <button className={s.text} onClick={add}>
-                      Добавить первую запись
-                    </button>
-                  )}
-                </div>
-              )}
-              {result.length > 25 && (
-                <div className={s.pager}>
-                  <button disabled={!current} onClick={() => setPage(current - 1)}>
-                    Назад
-                  </button>
-                  <span>
-                    {current * 25 + 1}–{Math.min(result.length, current * 25 + 25)} из {result.length}
-                  </span>
-                  <button disabled={(current + 1) * 25 >= result.length} onClick={() => setPage(current + 1)}>
-                    Далее
-                  </button>
-                </div>
-              )}
-            </>
-          )}
+          <RecordList
+            key={scope + (['work', 'pack'].includes(tab) ? phase : '')}
+            scope={scope}
+            rows={rows}
+            columns={columns}
+            placeholder={tab === 'standard' ? 'Поиск по нормативам' : 'Поиск по записям'}
+            quickFilter={tab === 'standard' ? { key: 'rules', value: 'С правилами' } : undefined}
+            pageSize={tab === 'standard' ? 10 : 25}
+            empty={
+              <>
+                <p>Пока нет записей</p>
+                <button onClick={add}>Добавить первую запись</button>
+              </>
+            }
+          >
+            {(groups) =>
+              tab === 'standard' ? (
+                <StandardsBrowser groups={groups} edit={setEdit} />
+              ) : (
+                groups.map((group) => (
+                  <section key={group.key}>
+                    <GroupTitle group={group} />
+                    <div className={s.records}>
+                      {group.rows.map((r) => (
+                        <button className={s.record} key={r.id} onClick={() => setEdit(r)}>
+                          <span>
+                            <strong>{r.v.name}</strong>
+                            <small>{rowDetails(r)}</small>
+                          </span>
+                          <ChevronRight size={15} />
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                ))
+              )
+            }
+          </RecordList>
         </Tabs.Content>
         {edit && (
           <Editor
@@ -732,20 +721,34 @@ export function Projects({ shell, notice }: { shell: ShellProps; notice: ReactNo
         {loading ? (
           <p role="status">Загрузка проектов…</p>
         ) : items.length ? (
-          <div className={s.cards}>
-            {items.map((p) => (
-              <button key={p.id} className={s.card} onClick={() => select(p.id)}>
-                <Folder size={23} />
-                <h2>{p.name}</h2>
-                <div>
-                  <span>
-                    Фазы · {p.phases}　 Акты · {p.works}
-                  </span>
-                  <ArrowRight size={17} />
-                </div>
-              </button>
-            ))}
-          </div>
+          <RecordList
+            scope="construction.projects"
+            rows={items}
+            columns={projectColumns}
+            placeholder="Поиск проектов"
+          >
+            {(groups) =>
+              groups.map((group) => (
+                <section key={group.key}>
+                  <GroupTitle group={group} />
+                  <div className={s.cards}>
+                    {group.rows.map((p) => (
+                      <button key={p.id} className={s.card} onClick={() => select(p.id)}>
+                        <Folder size={23} />
+                        <h2 title={p.name}>{p.name}</h2>
+                        <div>
+                          <span>
+                            Фазы · {p.phases}　 Акты · {p.works}
+                          </span>
+                          <ArrowRight size={17} />
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ))
+            }
+          </RecordList>
         ) : (
           !error && (
             <div className={s.empty}>

@@ -24,15 +24,15 @@
   justify-content: space-between;
 }
 .heading {
-  margin: 12px 0 30px;
+  margin: 0 0 16px;
   align-items: flex-end;
 }
 .heading > div:first-child {
   min-width: 0;
 }
 .heading h1 {
-  font-size: clamp(25px, 3vw, 36px);
-  letter-spacing: -1.25px;
+  font-size: clamp(22px, 2vw, 28px);
+  letter-spacing: -0.75px;
   line-height: 1.16;
   margin: 8px 0 0;
   overflow-wrap: anywhere;
@@ -113,28 +113,34 @@
 }
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
   gap: 16px;
 }
 .card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   text-align: left;
   color: var(--fg);
   border: 1px solid var(--edge);
   border-top: 3px solid var(--violet);
   border-radius: 10px;
-  padding: 21px;
+  padding: 16px;
   background: var(--surface);
 }
 .card > svg {
   color: var(--violet);
 }
 .card h2 {
-  font-size: 19px;
+  font-size: 15px;
+  font-weight: 570;
+  overflow-wrap: anywhere;
   letter-spacing: -0.4px;
   line-height: 1.35;
-  margin: 14px 0 20px;
+  margin: 9px 0 12px;
 }
 .card > div {
+  margin-top: auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -171,11 +177,11 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 38px;
+  min-height: 33px;
   width: 100%;
   border: 0;
   background: transparent;
-  padding: 9px 11px;
+  padding: 6px 9px;
   border-radius: 7px;
   color: var(--sub);
   font: inherit;
@@ -201,13 +207,14 @@
   margin-top: 10px;
 }
 .settings {
-  margin-top: 14px;
+  justify-content: flex-start;
+  margin-top: 10px;
 }
 .panel {
   min-width: 0;
 }
 .rowHeading h2 {
-  font-size: clamp(23px, 2vw, 32px);
+  font-size: clamp(21px, 1.75vw, 26px);
   line-height: 1.25;
   margin: 0;
   letter-spacing: -0.6px;
@@ -237,6 +244,17 @@
 .search:focus-within {
   outline: 2px solid var(--violet);
 }
+.records {
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.records .record:last-child {
+  border-bottom: 0;
+}
+.records .record:focus-visible {
+  outline-offset: -2px;
+}
 .record {
   display: flex;
   align-items: center;
@@ -247,13 +265,14 @@
   border-bottom: 1px solid var(--edge);
   background: var(--surface);
   text-align: left;
-  padding: 13px 4px;
+  padding: 9px 13px;
+  overflow-wrap: anywhere;
   color: var(--fg);
 }
 .record strong {
   font-size: 14px;
-  font-weight: 550;
-  line-height: 1.45;
+  font-weight: 510;
+  line-height: 1.4;
 }
 .record small,
 .fileBox small {
@@ -261,7 +280,7 @@
   color: var(--sub);
   font-size: 12px;
   line-height: 1.5;
-  margin-top: 4px;
+  margin-top: 2px;
 }
 .record svg {
   flex-shrink: 0;
@@ -493,7 +512,7 @@
   border: 1px solid var(--edge);
   background: var(--input);
   padding: 0 10px;
-  margin-bottom: 18px;
+  margin-bottom: 12px;
   border-radius: 7px;
   color: var(--fg);
   min-width: 0;
@@ -520,6 +539,7 @@
 }
 .phaseSelect {
   max-width: clamp(78px, 16vw, 240px);
+  flex-shrink: 0;
   background: transparent;
   font-size: 13px;
 }
@@ -529,7 +549,7 @@
   color: var(--fg);
 }
 .rowHeading {
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 .browser {
   display: grid;
@@ -548,7 +568,7 @@
 .listPane {
   display: flex;
   flex-direction: column;
-  min-height: min(68vh, 780px);
+  min-height: 0;
 }
 .toolbar {
   display: flex;
@@ -786,7 +806,7 @@
 @media (min-width: 1081px) {
   .listPane,
   .inspector {
-    height: max(470px, calc(100dvh - 170px));
+    max-height: max(420px, calc(100dvh - 220px));
   }
   .tableScroll,
   .inspector {

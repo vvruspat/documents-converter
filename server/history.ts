@@ -124,6 +124,11 @@ export class ConversionStore {
     await this.cleanDeletedFiles();
     return { removed };
   }
+  async index(): Promise<HistoryEntry[]> {
+    await this.ready();
+    const result = await this.pool.query<DbEntry>(`SELECT ${this.columns} FROM ${this.namespace}.conversions ORDER BY created_at DESC, id DESC`);
+    return result.rows.map(normalize);
+  }
   async list(offset: number, limit: number): Promise<{ items: HistoryEntry[]; total: number }> {
     await this.ready();
     const query = await this.pool.query(`WITH page AS (SELECT ${this.columns} FROM ${this.namespace}.conversions ORDER BY created_at DESC,id DESC LIMIT $1 OFFSET $2)

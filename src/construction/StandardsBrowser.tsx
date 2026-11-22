@@ -1,142 +1,55 @@
 import { useState, useRef } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
-import {
-  AlignLeft,
-  ChevronLeft,
-  ChevronRight,
-  FileText,
-  Filter,
-  Paperclip,
-  Pencil,
-  Plus,
-  Search,
-} from 'lucide-react';
+import { AlignLeft, FileText, Paperclip, Pencil, Plus } from 'lucide-react';
 import { formTypes, type Entry } from '../../shared/construction';
 import { attachments, textFields } from '../../shared/standard-rules';
 import { recordTitle } from './Editor';
+import { GroupTitle } from '../lists/RecordList';
+import type { Group } from '../lists/model';
 import s from './projects.module.css';
 
-export function StandardsBrowser({ rows, edit }: { rows: Entry[]; edit: (row: Entry) => void }) {
-  const [query, setQuery] = useState(''),
-    [onlyRules, setOnlyRules] = useState(false);
-  const [page, setPage] = useState(0),
-    [limit, setLimit] = useState(10),
-    [selected, setSelected] = useState('');
+export function StandardsBrowser({ groups, edit }: { groups: Group<Entry>[]; edit: (row: Entry) => void }) {
+  const [selected, setSelected] = useState('');
   const inspector = useRef<HTMLElement>(null);
   function select(id: string) {
     setSelected(id);
     if (matchMedia('(max-width:1080px)').matches) inspector.current?.focus();
   }
-  const result = rows.filter(
-    (r) => (!onlyRules || r.rules?.length) && recordTitle(r).toLowerCase().includes(query.trim().toLowerCase()),
-  );
-  const pages = Math.max(1, Math.ceil(result.length / limit)),
-    current = Math.min(page, pages - 1);
-  const visible = result.slice(current * limit, (current + 1) * limit);
+  const visible = groups.flatMap((g) => g.rows);
   const row = visible.find((r) => r.id === selected) || visible[0];
   return (
     <div className={s.browser}>
       <section className={s.listPane} aria-label="Справочник нормативов">
-        <div className={s.toolbar}>
-          <label className={s.search}>
-            <Search size={16} />
-            <input
-              aria-label="Поиск по нормативам"
-              placeholder="Поиск по нормативам"
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setPage(0);
-              }}
-            />
-          </label>
-          <button
-            className={s.secondary}
-            aria-pressed={onlyRules}
-            onClick={() => {
-              setOnlyRules(!onlyRules);
-              setPage(0);
-            }}
-          >
-            <Filter size={15} />С правилами
-          </button>
-        </div>
-        {visible.length ? (
-          <div className={s.tableScroll}>
-            <table className={s.normTable}>
-              <thead>
-                <tr>
-                  <th scope="col">Обозначение</th>
-                  <th scope="col">Название</th>
-                  <th scope="col">Правила</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visible.map((item) => (
-                  <tr key={item.id} data-selected={item.id === row.id} onClick={() => select(item.id)}>
-                    <td>
-                      <button type="button" aria-pressed={item.id === row.id}>
-                        <FileText size={17} />
-                        {item.v.name}
-                      </button>
-                    </td>
-                    <td>{item.v.description || '—'}</td>
-                    <td>{item.rules?.length || '—'}</td>
+        <div className={s.tableScroll}>
+          {groups.map((group) => (
+            <section key={group.key}>
+              <GroupTitle group={group} />
+              <table className={s.normTable}>
+                <thead>
+                  <tr>
+                    <th scope="col">Обозначение</th>
+                    <th scope="col">Название</th>
+                    <th scope="col">Правила</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className={s.empty}>
-            <h3>{rows.length ? 'Совпадений нет' : 'Пока нет нормативов'}</h3>
-            {(query || onlyRules) && (
-              <button
-                className={s.text}
-                onClick={() => {
-                  setQuery('');
-                  setOnlyRules(false);
-                  setPage(0);
-                }}
-              >
-                Сбросить фильтры
-              </button>
-            )}
-          </div>
-        )}
-        {result.length > 0 && (
-          <div className={s.listFoot}>
-            <div>
-              <button aria-label="Предыдущая страница" disabled={!current} onClick={() => setPage(current - 1)}>
-                <ChevronLeft size={16} />
-              </button>
-              <span>
-                {current + 1} из {pages}
-              </span>
-              <button
-                aria-label="Следующая страница"
-                disabled={current + 1 >= pages}
-                onClick={() => setPage(current + 1)}
-              >
-                <ChevronRight size={16} />
-              </button>
-            </div>
-            <label>
-              Показывать по{' '}
-              <select
-                value={limit}
-                onChange={(e) => {
-                  setLimit(Number(e.target.value));
-                  setPage(0);
-                }}
-              >
-                {[10, 25, 50].map((n) => (
-                  <option key={n}>{n}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-        )}
+                </thead>
+                <tbody>
+                  {group.rows.map((item) => (
+                    <tr key={item.id} data-selected={item.id === row.id} onClick={() => select(item.id)}>
+                      <td>
+                        <button type="button" aria-pressed={item.id === row.id}>
+                          <FileText size={17} />
+                          {item.v.name}
+                        </button>
+                      </td>
+                      <td>{item.v.description || '—'}</td>
+                      <td>{item.rules?.length || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          ))}
+        </div>
       </section>
       {row && (
         <aside ref={inspector} tabIndex={-1} className={s.inspector} aria-label="Выбранный норматив">
