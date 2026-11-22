@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { BadRequestException } from '@nestjs/common';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -46,14 +47,34 @@ function text(cell: ExcelJS.Cell): string {
         .replace(/_x000D_/gi, '')
         .trim();
 }
-export async function importBook(buffer: Buffer, phaseName: string) {
-  await openOfficeZip(buffer, 'xl/workbook.xml');
-  const book = new ExcelJS.Workbook();
+export async function readImportWorkbook(buffer: Buffer): Promise<ExcelJS.Workbook> {
+  const part = 'xl/workbook.xml';
+  const zip = await openOfficeZip(buffer, part);
   try {
-    await book.xlsx.load(buffer as unknown as Parameters<typeof book.xlsx.load>[0]);
+    const xml = await zip.file(part)!.async('string');
+    const document = new DOMParser().parseFromString(xml, 'application/xml');
+    const root = document.documentElement;
+    if (!root || root.localName !== 'workbook') throw Error('Invalid workbook');
+    const names = Array.from(root.getElementsByTagNameNS(root.namespaceURI, 'definedNames'));
+    // ExcelJS materializes every address in each named range. Import uses cell values
+    // and cached formula results, so even a whole-column filter needs no name index.
+    if (names.length) {
+      for (const node of names) node.parentNode!.removeChild(node);
+      zip.file(part, new XMLSerializer().serializeToString(document));
+      buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    }
+    const book = new ExcelJS.Workbook();
+    await book.xlsx.load(buffer as unknown as Parameters<typeof book.xlsx.load>[0], {
+      ignoreNodes: ['dataValidations'],
+    });
+    return book;
   } catch {
     throw new BadRequestException('Не удалось прочитать книгу Excel.');
   }
+}
+
+export async function importBook(buffer: Buffer, phaseName: string) {
+  const book = await readImportWorkbook(buffer);
   const sheet = (name: string) => {
     const found = book.getWorksheet(name);
     if (!found) throw new BadRequestException('В книге отсутствует лист «' + name + '».');

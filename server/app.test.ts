@@ -631,3 +631,18 @@ test('imports workbook references by role and name, including multiple hidden ac
   assert.deepEqual(acts[2].links.children, acts.slice(0,2).map(r=>r.id));
   assert.equal(acts[0].links.signer4[0],project.rows.find(r=>r.v.name==='Второй Б. Б.')?.id);
 });
+
+test('workbook import keeps cell values and cached formula results without expanding named ranges', async () => {
+  const { readImportWorkbook } = await import('./construction/import.js');
+  const source = new ExcelJS.Workbook();
+  const sheet = source.addWorksheet('Материалы');
+  sheet.getCell('A1').value = 'Бетон';
+  sheet.getCell('B1').value = { formula: 'INDEX(Materials, 1)', result: 'Бетон' };
+  source.definedNames.add('Материалы!$A$1:$A$10', 'Materials');
+  const data = Buffer.from(await source.xlsx.writeBuffer());
+  const imported = await readImportWorkbook(data);
+  assert.deepEqual(imported.definedNames.model, []);
+  assert.equal(imported.getWorksheet('Материалы')!.getCell('A1').value, 'Бетон');
+  assert.equal(imported.getWorksheet('Материалы')!.getCell('B1').result, 'Бетон');
+  assert.equal(source.definedNames.getRanges('Materials').ranges.length, 1);
+});
