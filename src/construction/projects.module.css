@@ -511,3 +511,23 @@
 .extraForms label {
   margin-top: 10px;
 }
+.ruleSection {
+  margin-top: 18px;
+}
+.ruleSection h3 {
+  margin: 0 0 8px;
+}
+.rule {
+  min-width: 0;
+  padding: 12px;
+  margin: 12px 0;
+  border: 1px solid #c2d3c7;
+  border-radius: 7px;
+  overflow-wrap: anywhere;
+}
+.rule legend, .rule li {
+  font-size: 13px;
+}
+.rule button {
+  margin-top: 10px;
+}

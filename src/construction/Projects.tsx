@@ -32,6 +32,7 @@ import {
   type ProjectSummary,
   type SavedProject,
 } from '../../shared/construction';
+import { evaluateStandardRules, withHiddenWorks } from '../../shared/standard-rules';
 import { api, Editor, Modal, recordTitle } from './Editor';
 import s from './projects.module.css';
 
@@ -185,7 +186,14 @@ function Export({ project, phase, close }: { project: SavedProject; phase: strin
   const works = project.rows.filter(
     (r) => r.kind === 'work' && r.links.phase[0] === phase && (!pack || r.links.pack?.includes(pack)),
   );
-  const count = selected.length || works.length;
+  const byId = new Map(project.rows.map((r) => [r.id, r]));
+  const included = withHiddenWorks(selected.length ? works.filter((r) => selected.includes(r.id)) : works, byId);
+  const count = included.length;
+  const reviews = included
+    .map((work) => ({ work, ...evaluateStandardRules(work, byId) }))
+    .filter((item) => item.checks.length || item.changes.size);
+  const incomplete = reviews.some((item) => item.checks.some((check) => !check.complete));
+  const hasConflict = reviews.some((item) => item.conflicts.length);
   async function exportZip() {
     setBusy(true);
     setError('');
@@ -243,6 +251,37 @@ function Export({ project, phase, close }: { project: SavedProject; phase: strin
             </label>
           ))}
         </div>
+        {reviews.length > 0 && (
+          <section className={s.ruleSection}>
+            <h3>Проверка нормативов</h3>
+            {reviews.map(({ work, checks, changes, conflicts }) => (
+              <div className={s.rule} key={work.id}>
+                <strong>{recordTitle(work)}</strong>
+                <ul>
+                  {[...changes].map(([key, change]) => (
+                    <li key={key}>
+                      {change.label} · {[...change.sources].join(', ')}
+                      {[...change.replacements].map((text) => (
+                        <div key={'r' + text}>Заменить на «{text}»</div>
+                      ))}
+                      {[...change.additions].map((text) => (
+                        <div key={'a' + text}>Добавить «{text}»</div>
+                      ))}
+                    </li>
+                  ))}
+                  {checks.map((check, i) => (
+                    <li key={i}>
+                      {check.document} · {check.basis} · <strong>{check.status}</strong>
+                    </li>
+                  ))}
+                </ul>
+                {conflicts.length > 0 && (
+                  <p role="alert">Укажите одну замену для поля «{conflicts.join(', ')}».</p>
+                )}
+              </div>
+            ))}
+          </section>
+        )}
         {!works.length && <p>В этом комплекте пока нет работ.</p>}
       </div>
       {error && (
@@ -254,9 +293,9 @@ function Export({ project, phase, close }: { project: SavedProject; phase: strin
         <button className={s.secondary} disabled={busy} onClick={close}>
           Отмена
         </button>
-        <button className={s.primary} disabled={busy || !count} onClick={() => void exportZip()}>
+        <button className={s.primary} disabled={busy || !count || hasConflict} onClick={() => void exportZip()}>
           <Download size={16} />
-          {busy ? 'Сборка…' : 'Скачать ZIP'} · {count}
+          {busy ? 'Сборка…' : incomplete ? 'Скачать ZIP с замечаниями' : 'Скачать ZIP'} · {count}
         </button>
       </div>
     </Modal>
@@ -500,9 +539,9 @@ function Workspace({ initial, back, warnings }: { initial: SavedProject; back: (
               ? () => persist({ ...project, rows: project.rows.filter((r) => r.id !== edit.id) })
               : undefined
           }
-          save={(v, links, file, detach) => {
+          save={(v, links, file, detach, rules) => {
             if (edit === 'settings') return persist({ ...project, v });
-            const r = { ...edit, v, links };
+            const r = { ...edit, v, links, rules };
             if (detach) delete r.file;
             return persist(
               {

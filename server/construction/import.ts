@@ -3,7 +3,7 @@ import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { BadRequestException } from '@nestjs/common';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { entry, formTypes, type Entry, type Kind, type Project } from '../../shared/construction.js';
+import { entry, formTypes, matchStandardText, type Entry, type Kind, type Project } from '../../shared/construction.js';
 import { openOfficeZip } from './office.js';
 
 export const formsDir = path.resolve('server/construction/forms');
@@ -271,7 +271,9 @@ export async function importBook(buffer: Buffer, phaseName: string) {
       ...values(g, ['design', 'compliance', '', 'manual', 'copies', 'notes', 'use', 'load', 'loadTerms'], 33),
       next: g(16),
     };
+    const matched = matchStandardText(g(34), p.rows);
     const links = {
+      standards: matched.ids,
       phase: [phase],
       template: [tpl.id],
       pack: g(17)
@@ -283,7 +285,7 @@ export async function importBook(buffer: Buffer, phaseName: string) {
       schemes: resolve('scheme', g(32)),
       protocols: resolve('protocol', g(35)),
     };
-    const work = add('work', g(1), v, links);
+    const work = add('work', g(1), { ...v, compliance: matched.remaining }, links);
     if (g(18)) parents.push([work, g(18)]);
   });
   for (const [parent, raw] of parents) {
