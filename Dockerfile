@@ -11,6 +11,7 @@ WORKDIR /app
 RUN apk add --no-cache curl poppler-utils font-liberation tesseract-ocr tesseract-ocr-data-osd tesseract-ocr-data-rus tesseract-ocr-data-eng
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/server/construction/forms ./server/construction/forms
 COPY --from=build --chown=node:node /app/package.json ./package.json
 RUN mkdir -p /app/data && chown node:node /app/data
 USER node

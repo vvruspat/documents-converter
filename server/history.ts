@@ -1,3 +1,4 @@
+import { ProjectStore } from './construction/store.js';
 import { sourceText, type DocumentFields, type StoredPage, type Transcript } from './document-register.js';
 import type { CatalogRow, DocumentSet, Requirement } from '../shared/catalog.js';
 import type { IndexedFile } from './catalog.js';
@@ -21,6 +22,7 @@ type DbEntry = Omit<HistoryEntry, 'createdAt'> & { createdAt: string | Date };
 const normalize = (row: DbEntry): HistoryEntry => ({ ...row, createdAt: new Date(row.createdAt).toISOString() });
 
 export class ConversionStore {
+  readonly projects: ProjectStore;
   private pool: Pool;
   private files: string;
   private namespace: string;
@@ -36,6 +38,7 @@ export class ConversionStore {
     mkdirSync(this.files, { recursive: true, mode: 0o700 });
     this.pool = new Pool({ connectionString: options.connectionString, max: 5, connectionTimeoutMillis: 5000, idleTimeoutMillis: 30000, statement_timeout: 10000 });
     this.pool.on('error', () => console.error('PostgreSQL idle connection error'));
+    this.projects = new ProjectStore(this.pool, this.namespace, () => this.ready());
     this.initialized = this.initialize();
     // Startup and database entry points await this promise; handle rejection until then.
     void this.initialized.catch(() => {});
@@ -68,6 +71,7 @@ export class ConversionStore {
         job uuid NOT NULL, page integer NOT NULL, transcript jsonb NOT NULL, readings jsonb, PRIMARY KEY(job,page))`);
       await client.query(`CREATE TABLE IF NOT EXISTS ${this.namespace}.registry_document_fields (
         job uuid NOT NULL, position integer NOT NULL, result jsonb NOT NULL, PRIMARY KEY(job,position))`);
+      await client.query(ProjectStore.ddl(this.namespace));
       const finalized = await client.query(`SELECT key FROM ${this.namespace}.history_migrations WHERE key='sqlite-finalized'`);
       const legacy = finalized.rowCount ? [] : await this.readLegacy();
       let imported = 0;
@@ -105,6 +109,7 @@ export class ConversionStore {
     try {
       await client.query('BEGIN');
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`documents-converter-schema:${this.options.schema ?? 'public'}`]);
+      await client.query(ProjectStore.ddl(this.namespace));
       const finalized = await client.query(`SELECT key FROM ${this.namespace}.history_migrations WHERE key='sqlite-finalized'`);
       if (finalized.rowCount) { await client.query('COMMIT'); return { removed: 0 }; }
       await access(path.join(this.options.directory, 'conversions.sqlite'));
