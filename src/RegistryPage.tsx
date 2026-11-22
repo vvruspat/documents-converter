@@ -1,3 +1,5 @@
+import { statusLabels } from './lists/status';
+import { RecordList, GroupTitle } from './lists/RecordList';
 import './registry.css';
 import { Archive, Building2, ChevronDown, Folder, FolderOpen, Layers, Plus, Sparkles } from 'lucide-react';
 import { Catalog } from './Catalog';
@@ -137,7 +139,10 @@ export function RegistryPage() {
     </div>
     <p className="registry-note">Обработка большого PDF может занять время. Можно закрыть страницу и вернуться позже. Подсвеченные ячейки в Excel требуют проверки по оригиналу. Пересоздание повторно распознаёт все страницы.</p>
     <div className="registry-list"><div className="list-heading"><span>Реестры <span className="muted">{projectJobs.length}</span></span></div>
-      {projectJobs.length === 0 ? <p className="empty-history">Здесь появятся ваши PDF и готовые реестры.</p> : projectJobs.map(job => <div className="job registry-job" key={job.id}>
+      {projectJobs.length === 0 ? <p className="empty-history">Здесь появятся ваши PDF и готовые реестры.</p> : <RecordList scope={'archive.uploads.'+selected} rows={projectJobs} columns={[
+        {key:'status',label:'Статус',value:j=>statusLabels[j.status]}, {key:'name',label:'Файл',value:j=>j.originalName},
+        {key:'date',label:'Дата загрузки',value:j=>j.createdAt.slice(0,10)},{key:'pages',label:'Число страниц',value:j=>j.pages}
+      ]}>{groups=>groups.map(group=><section key={group.key}><GroupTitle group={group}/>{group.rows.map(job => <div className="job registry-job" key={job.id}>
         <FileText className="file-icon" size={22} strokeWidth={1.5} />
         <div className="job-body"><div className="job-name" title={job.originalName}>{job.originalName}</div>
           <div className={`job-status ${job.status === 'error' ? 'error-text' : ''}`} aria-live="polite">
@@ -151,7 +156,7 @@ export function RegistryPage() {
           {job.status === 'error' && <button className="icon-button" title="Повторить" aria-label={`Повторить ${job.originalName}`} disabled={action === job.id} onClick={() => void change(job, 'retry')}>{action === job.id ? <LoaderCircle className="spin" size={16} /> : <RotateCcw size={17} />}</button>}
           {job.status !== 'working' && <button className="icon-button delete" title="Удалить" aria-label={`Удалить ${job.originalName}`} disabled={action === job.id} onClick={() => void change(job, 'delete')}><Trash2 size={16} /></button>}
         </div>
-      </div>)}
+      </div>)}</section>)}</RecordList>}
     </div>
     </div></div>
   </section>;

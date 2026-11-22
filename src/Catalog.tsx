@@ -1,3 +1,4 @@
+import { RecordList, GroupTitle } from './lists/RecordList';
 import { useEffect, useState } from 'react';
 import { DocumentList, SourceLink as Scan } from './DocumentList';
 import { Layers, Plus, Sparkles } from 'lucide-react';
@@ -45,7 +46,10 @@ export function Catalog({ project, revision, view }: { project: string; revision
     <div hidden={view !== 'sets'} className="set-panel">
     {!draft.length && <div className="set-bar"><span>{loading ? 'Загрузка…' : 'Комплектов: ' + sets.length}</span><button className="accent-control" onClick={() => setDraft([empty()])}><Plus size={15}/> Создать комплект</button></div>}
     {!loading && !sets.length && !draft.length && <div className="library-empty"><Layers/><p>В проекте пока нет комплектов</p></div>}
-    {sets.map(set => {
+    {sets.length>0 && <RecordList scope={'archive.sets.'+project} rows={sets} columns={[
+      {key:'name', label:'Название',value:s=>s.name},{key:'count',label:'Число позиций',value:s=>s.requirements.length},
+      {key:'kind',label:'Виды документов',value:s=>s.requirements.map(r=>r.kind)}]}>
+      {groups=>groups.map(group=><section key={group.key}><GroupTitle group={group}/>{group.rows.map(set => {
       const positions = set.requirements.map((req,i) => assess(req, cards, set.confirmations[i]));
       const found = positions.filter(r => ['Найден','Подтверждён'].includes(r.status)).length;
       return <details key={set.id} className="kit-card"><summary><Layers size={19}/><strong>{set.name}</strong><span>{found} из {positions.length}</span></summary><progress value={found} max={positions.length} aria-label="Найденные позиции"/>
@@ -54,7 +58,7 @@ export function Catalog({ project, revision, view }: { project: string; revision
           {matches.map(c => <div key={c.id}>{c.name} · <Scan source={c.sources[0]} /> <button disabled={busy} onClick={() => void submit('/api/catalog/confirm', { id: set.id, position: i, card: status === 'Подтверждён' ? null : c.id })}>{status === 'Подтверждён' ? 'Снять подтверждение' : 'Подтвердить'}</button></div>)}</li>)}</ul>
         <button type="button" onClick={() => { setName(''); setDraft(set.requirements.map(r => ({ ...r }))); }}>Использовать как шаблон</button>
       </details>;
-    })}
+    })}</section>)}</RecordList>}
     {draft.length > 0 &&
       <form onSubmit={e => { e.preventDefault(); void submit('/api/catalog/sets', { name, requirements: draft }); }}>
         <label>Название комплекта<input required maxLength={300} placeholder="Монтаж панелей · С2 · этаж 5" value={name} onChange={e => setName(e.target.value)} /></label>
@@ -68,7 +72,7 @@ export function Catalog({ project, revision, view }: { project: string; revision
         <button disabled={busy}>Сохранить комплект</button><button type="button" onClick={() => setDraft([])}>Отмена</button>
       </form>}
     </div>
-    <div hidden={view !== 'catalog'}><DocumentList cards={cards} loading={loading}/></div>
+    <div hidden={view !== 'catalog'}><DocumentList project={project} cards={cards} loading={loading}/></div>
     <div hidden={view !== 'ask'} className="ask-panel"><Sparkles size={24}/>
     <form onSubmit={e => { e.preventDefault(); setAnswers(null); void submit('/api/catalog/ask', { question }); }}>
       <label>О чём найти сведения в документах?<textarea rows={3} required minLength={3} maxLength={1000} value={question} onChange={e => setQuestion(e.target.value)} placeholder="Каким паспортом подтверждена партия 373?" /></label>

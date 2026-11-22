@@ -1,50 +1,169 @@
+import { RecordList, GroupTitle } from './lists/RecordList';
+import type { Column } from './lists/model';
 import { useState } from 'react';
-import { ArrowUpRight, BookOpen, ChevronLeft, ChevronRight, ClipboardList, FileBadge, FileText, FolderOpen, ListFilter, Search, Shapes, X } from 'lucide-react';
+import { ArrowUpRight, BookOpen, ChevronRight, ClipboardList, FileBadge, FileText, Shapes } from 'lucide-react';
 import { fieldLabels, type Field } from '../shared/scan';
 import { ScanComparison } from './ScanComparison';
-import { normalized, type Card, type Source } from '../shared/catalog';
+import { type Card, type Source } from '../shared/catalog';
 
-const icons = { 'Акт': ClipboardList, 'Паспорт': BookOpen, 'Сертификат': FileBadge, 'Исполнительная схема': Shapes };
+const icons = { Акт: ClipboardList, Паспорт: BookOpen, Сертификат: FileBadge, 'Исполнительная схема': Shapes };
 function DocumentIcon({ kind }: { kind: string }) {
   const Icon = icons[kind as keyof typeof icons] ?? FileText;
-  return <span className="document-icon" data-kind={kind}><Icon size={18} /></span>;
+  return (
+    <span className="document-icon" data-kind={kind}>
+      <Icon size={18} />
+    </span>
+  );
 }
 export function SourceLink({ source }: { source: Source }) {
-  return <a className="source-link" href={`/api/registry/${source.job}/source#page=${source.first}`} target="_blank" rel="noreferrer">
-    <FileText size={15}/><span>{source.file} · стр. {source.first}{source.last !== source.first && '–' + source.last}</span><ArrowUpRight size={15}/>
-  </a>;
+  return (
+    <a
+      className="source-link"
+      href={`/api/registry/${source.job}/source#page=${source.first}`}
+      target="_blank"
+      rel="noreferrer"
+    >
+      <FileText size={15} />
+      <span>
+        {source.file} · стр. {source.first}
+        {source.last !== source.first && '–' + source.last}
+      </span>
+      <ArrowUpRight size={15} />
+    </a>
+  );
 }
 function ScanShortcut({ source }: { source: Source }) {
-  return <a className="scan-shortcut" target="_blank" rel="noreferrer" href={`/api/registry/${source.job}/source#page=${source.first}`}>
-    <span>{source.file}</span><small>Лист {source.first}{source.last !== source.first && '–' + source.last} ↗</small></a>;
+  return (
+    <a
+      className="scan-shortcut"
+      target="_blank"
+      rel="noreferrer"
+      href={`/api/registry/${source.job}/source#page=${source.first}`}
+    >
+      <span>{source.file}</span>
+      <small>
+        Лист {source.first}
+        {source.last !== source.first && '–' + source.last} ↗
+      </small>
+    </a>
+  );
 }
 function shownField(card: Card, field: Field) {
-  if (card.reviewFields.includes(field)) return <mark className="review-value" title={fieldLabels[field] + ' · проверить'}>{card[field] || 'Не удалось прочитать'}</mark>;
+  if (card.reviewFields.includes(field))
+    return (
+      <mark className="review-value" title={fieldLabels[field] + ' · проверить'}>
+        {card[field] || 'Не удалось прочитать'}
+      </mark>
+    );
   return card[field] || '—';
 }
-const perPage = 20;
-export function DocumentList({ cards, loading }: { cards: Card[]; loading: boolean }) {
-  const [query,setQuery] = useState(''), [kind,setKind] = useState(''), [review,setReview] = useState(false);
-  const [volume,setVolume] = useState('');
-  const volumes = new Map(cards.flatMap(card => card.sources.map(s => [s.job, s.file] as const)));
-  const [page,setPage] = useState(0), [opened,setOpened] = useState<Card | null>(null);
-  const terms = normalized(query).split(/\s+/).filter(Boolean);
-  const filtered = cards.filter(c => {
-    if ((volume && !c.sources.some(s => s.job === volume)) || (kind && c.kind !== kind) || (review && !c.uncertain)) return false;
-    const text = normalized([c.name,c.number,c.organization,c.kind,c.section,c.floor,c.date,c.material,c.batch,c.work,...c.sources.map(s=>s.file)].join(' '));
-    return terms.every(term => text.includes(term));
-  });
-  const current = Math.min(page, Math.max(0, Math.ceil(filtered.length/perPage)-1)), start = current*perPage;
-  return <section className="library-panel">
-    <div className="library-toolbar"><label className="search-box"><Search size={18}/><input type="search" aria-label="Поиск по документам" placeholder="Название, номер или организация" value={query} onChange={e=>{setQuery(e.target.value);setPage(0);}}/></label>
-      <label className="kind-filter"><ListFilter size={16}/><select aria-label="Вид документа" value={kind} onChange={e=>{setKind(e.target.value);setPage(0);}}><option value="">Все виды</option>{[...new Set(cards.map(c=>c.kind))].sort().map(k=><option key={k}>{k}</option>)}</select></label>
-      <label className="kind-filter"><FolderOpen size={16}/><select aria-label="Исходный PDF" value={volume} onChange={e=>{setVolume(e.target.value);setPage(0);}}><option value="">Все PDF</option>{[...volumes].map(([id,file])=><option key={id} value={id}>{file}</option>)}</select></label></div>
-    <div className="library-switch"><button aria-pressed={!review} onClick={()=>{setReview(false);setPage(0);}}>Все документы <b>{cards.length}</b></button><button aria-pressed={review} onClick={()=>{setReview(true);setPage(0);}}>Требуют проверки <b>{cards.filter(c=>c.uncertain).length}</b></button></div>
-    {filtered.length > 0 ? <><table className="document-table"><thead><tr><th>Документ</th><th>Организация</th><th>Дата</th><th className="scan-column">Исходник</th><th aria-label="Открыть"/></tr></thead><tbody>
-      {filtered.slice(start,start+perPage).map(c=><tr key={c.id} onClick={()=>setOpened(c)}><td><div className="document-title"><DocumentIcon kind={c.kind}/><div><button onClick={e=>{e.stopPropagation();setOpened(c);}}>{shownField(c, 'name')}</button><small>{c.kind}{(c.number || c.reviewFields.includes('number')) && <> · {shownField(c, 'number')}</>}</small></div></div></td>
-        <td>{shownField(c, 'organization')}</td><td>{shownField(c, 'date')}</td><td className="scan-column" onClick={e=>e.stopPropagation()}><ScanShortcut source={c.sources.find(s=>s.job===volume) ?? c.sources[0]}/></td><td><ChevronRight size={15}/></td></tr>)}</tbody></table>
-      <footer className="library-pager"><span>{start+1}–{Math.min(start+perPage,filtered.length)} из {filtered.length}</span><button aria-label="Предыдущая страница" disabled={!current} onClick={()=>setPage(current-1)}><ChevronLeft size={16}/></button><button aria-label="Следующая страница" disabled={start+perPage>=filtered.length} onClick={()=>setPage(current+1)}><ChevronRight size={16}/></button></footer></> :
-      <div className="library-empty"><FolderOpen/><p>{loading ? 'Загружаем документы…' : cards.length ? 'Документы не найдены' : 'В проекте пока нет документов'}</p>{(query || kind || review || volume) && <button onClick={()=>{setKind('');setQuery('');setVolume('');setReview(false);setPage(0);}}><X size={14}/> Сбросить фильтры</button>}</div>}
-    {opened && <ScanComparison preferredJob={volume} card={opened} close={()=>setOpened(null)}/>}
-  </section>;
+const documentFields = {
+  kind: 'Вид документа',
+  name: 'Название',
+  number: 'Номер',
+  organization: 'Организация',
+  date: 'Дата',
+  material: 'Материал',
+  batch: 'Партия',
+  work: 'Вид работ',
+  floor: 'Этаж',
+  section: 'Секция',
+} as const;
+export function DocumentList({ cards, loading, project }: { cards: Card[]; loading: boolean; project: string }) {
+  const [opened, setOpened] = useState<{ card: Card; job?: string }>();
+  const volumes = new Map(cards.flatMap((card) => card.sources.map((s) => [s.job, s.file] as const)));
+  const columns: Column<Card>[] = Object.entries(documentFields).map(([key, label]) => ({
+    key,
+    label,
+    value: (c) => c[key as keyof typeof documentFields],
+  }));
+  columns.push(
+    {
+      key: 'review',
+      label: 'Проверка',
+      value: (c) => (c.uncertain ? 'Требуют проверки' : 'Проверка не требуется'),
+    },
+    {
+      key: 'volume',
+      label: 'Исходный PDF',
+      value: (c) => c.sources.map((s) => s.job),
+      display: (id) => volumes.get(id) || id,
+    },
+  );
+  return (
+    <section className="library-panel">
+      <RecordList
+        scope={'archive.documents.' + project}
+        rows={cards}
+        columns={columns}
+        quickFilter={{ key: 'review', value: 'Требуют проверки' }}
+        pageSize={20}
+        placeholder="Поиск по документам"
+        empty={loading ? 'Загружаем документы…' : 'В проекте пока нет документов'}
+      >
+        {(groups, config) =>
+          groups.map((group) => (
+            <section key={group.key}>
+              <GroupTitle group={group} />
+              <div className="history-scroll">
+                <table className="document-table">
+                  <thead>
+                    <tr>
+                      <th>Документ</th>
+                      <th>Организация</th>
+                      <th>Дата</th>
+                      <th className="scan-column">Исходник</th>
+                      <th aria-label="Открыть" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.rows.map((c) => {
+                      const source = c.sources.find((s) => config.filters.volume?.includes(s.job)) ?? c.sources[0];
+                      const open = () => setOpened({ card: c, job: source.job });
+                      return (
+                        <tr key={c.id} onClick={open}>
+                          <td>
+                            <div className="document-title">
+                              <DocumentIcon kind={c.kind} />
+                              <div>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    open();
+                                  }}
+                                >
+                                  {shownField(c, 'name')}
+                                </button>
+                                <small>
+                                  {c.kind}
+                                  {(c.number || c.reviewFields.includes('number')) && (
+                                    <> · {shownField(c, 'number')}</>
+                                  )}
+                                </small>
+                              </div>
+                            </div>
+                          </td>
+                          <td>{shownField(c, 'organization')}</td>
+                          <td>{shownField(c, 'date')}</td>
+                          <td className="scan-column" onClick={(e) => e.stopPropagation()}>
+                            <ScanShortcut source={source} />
+                          </td>
+                          <td>
+                            <ChevronRight size={15} />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ))
+        }
+      </RecordList>
+      {opened && (
+        <ScanComparison preferredJob={opened.job || ''} card={opened.card} close={() => setOpened(undefined)} />
+      )}
+    </section>
+  );
 }

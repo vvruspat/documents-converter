@@ -134,6 +134,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
     await history.forgetFile(String(req.params.id));
     res.json({ ok: true });
   });
+  app.get('/api/history/index', async (_req, res) => { res.json(await history.index()); });
   app.get('/api/history', async (req, res) => {
     const input = z.object({ offset: z.coerce.number().int().min(0).max(1_000_000).default(0), limit: z.coerce.number().int().min(1).max(50).default(25) }).safeParse(req.query);
     if (!input.success) throw new UserError('Некорректная страница истории.');

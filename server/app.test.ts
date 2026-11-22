@@ -176,6 +176,9 @@ test('real API entry points recognize a photo through the adapter and export the
   const id = result.body.conversion.id;
   const list = await request(app).get('/api/history').set('Cookie', cookie()).expect(200);
   assert.ok(list.body.items.some((entry: {id: string}) => entry.id === id));
+  await request(app).get('/api/history/index').expect(401);
+  const index = await request(app).get('/api/history/index').set('Cookie', cookie()).expect(200);
+  assert.deepEqual(index.body.find((entry: {id: string}) => entry.id === id), result.body.conversion);
   await request(app).get(`/api/history/${id}/source`).set('Cookie', cookie()).expect(200);
   await request(app).get(`/api/history/${id}/result`).set('Cookie', cookie()).expect(200);
   await request(app).get('/api/history?limit=99999').set('Cookie', cookie()).expect(400);

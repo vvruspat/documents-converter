@@ -38,7 +38,7 @@
 }
 .shell {
   display: grid;
-  grid-template-columns: clamp(210px, 17vw, 270px) minmax(0, 1fr);
+  grid-template-columns: clamp(219px, 17vw, 242px) minmax(0, 1fr);
   min-height: 100dvh;
   background: var(--canvas);
   color: var(--fg);
@@ -57,7 +57,7 @@
 }
 .brand,
 .top {
-  height: 61px;
+  height: 52px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--edge);
   display: flex;
@@ -66,7 +66,7 @@
 }
 .brand {
   padding: 0 16px;
-  font-size: 18px;
+  font-size: 16px;
   letter-spacing: -0.6px;
 }
 .shell button:focus-visible,
@@ -103,7 +103,7 @@
   min-height: 0;
   overflow: auto;
   flex: 1;
-  padding: 16px 10px;
+  padding: 12px 8px;
   gap: 18px;
 }
 .bottom {
@@ -126,7 +126,7 @@
   gap: 10px;
   color: var(--sub);
   border-radius: 6px;
-  padding: 9px 10px;
+  padding: 7px 10px;
   font-size: 13px;
   cursor: pointer;
 }
@@ -174,7 +174,7 @@
   min-width: 0;
 }
 .top {
-  padding: 0 clamp(14px, 2vw, 32px);
+  padding: 0 clamp(16px, 1.6vw, 26px);
   justify-content: space-between;
   background: var(--surface);
   color: var(--sub);
@@ -203,7 +203,7 @@
 }
 .content {
   min-width: 0;
-  padding: clamp(16px, 2vw, 32px);
+  padding: clamp(16px, 1.6vw, 26px);
 }
 @media (min-width: 761px) {
   .shell[data-collapsed='true'] {
