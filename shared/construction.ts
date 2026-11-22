@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ruleSchema, bookmark } from './standard-rules.js';
 
 export const kinds = [
   'phase',
@@ -182,6 +183,7 @@ export const rowSchema = z.object({
   v: valuesSchema,
   links: z.record(z.string(), z.array(z.uuid()).max(5000)),
   file: z.string().max(200).optional(),
+  rules: z.array(ruleSchema).max(100).optional(),
 });
 export type Entry = z.infer<typeof rowSchema>;
 export const projectSchema = z.object({ v: valuesSchema, rows: z.array(rowSchema).max(15000) });
@@ -198,6 +200,24 @@ export function entry(kind: Kind, v: Record<string, string>, links: Entry['links
   bytes[8] = (bytes[8] & 63) | 128;
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
   return { id: hex.replace(/^(........)(....)(....)(....)(............)$/, '$1-$2-$3-$4-$5'), kind, v, links };
+}
+// The workbook stores the catalogue caption in a semicolon-separated list.
+export function matchStandardText(raw: string, rows: Entry[]) {
+  const normalize = (value: string) => value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru');
+  const candidates = new Map<string, string | null>();
+  for (const row of rows) {
+    if (row.kind !== 'standard') continue;
+    const key = normalize([row.v.name, row.v.description].filter(Boolean).join(' '));
+    candidates.set(key, candidates.has(key) ? null : row.id);
+  }
+  const ids = new Set<string>();
+  const remaining = raw.split(';').filter((part) => {
+    const id = candidates.get(normalize(part));
+    if (!id) return true;
+    ids.add(id);
+    return false;
+  });
+  return { ids: [...ids], remaining: ids.size ? remaining.join(';').trim() : raw };
 }
 export const workTitle = (v: Entry['v']) =>
   [
@@ -233,6 +253,13 @@ export function validateProject(p: Project): string | undefined {
   for (const row of p.rows) {
     const spec = fields[row.kind],
       prefix = (row.v.name || labels[row.kind]) + ': ';
+    if (row.rules?.length) {
+      if (row.kind !== 'standard') return prefix + 'правила доступны в карточке норматива.';
+      for (const rule of row.rules) {
+        if (rule.action !== 'require' && (!bookmark(rule.field, rule.form) || !rule.text.trim()))
+          return prefix + 'выберите доступное поле и укажите текст правила.';
+      }
+    }
     if (Object.keys(row.links).some((k) => !spec.some((f) => f.type === 'link' && f.key === k)))
       return prefix + 'неизвестная связь.';
     for (const field of spec) {

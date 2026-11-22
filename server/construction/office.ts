@@ -73,8 +73,12 @@ export async function renderForm(
   values: Record<string, string>,
   materialRows: string[][] = [],
   structure = false,
+  requiredMarks: string[] = [],
 ) {
   const { zip, doc, marks } = await templateFile(data);
+  const names = new Set(marks.map(mark => mark.getAttributeNS(W, 'name')));
+  for (const key of requiredMarks) if (!names.has(key))
+    throw new BadRequestException('Для правила норматива в шаблоне Word нужна закладка «' + key + '».');
   const ends = new Map(
     Array.from(doc.getElementsByTagNameNS(W, 'bookmarkEnd')).map((e) => [e.getAttributeNS(W, 'id'), e]),
   );

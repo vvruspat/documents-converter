@@ -3,6 +3,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { Download, X, ScanText, Trash2 } from 'lucide-react';
 import {
   canSign,
+  matchStandardText,
   fields,
   roles,
   projectFields,
@@ -11,6 +12,7 @@ import {
   type Field,
   type SavedProject,
 } from '../../shared/construction';
+import { StandardRules } from './StandardRules';
 import s from './projects.module.css';
 
 export async function api(url: string, options?: RequestInit) {
@@ -59,7 +61,7 @@ export function Modal({
 }
 const fileKinds = ['template', 'material', 'scheme', 'protocol'];
 export function recordTitle(r: Entry) {
-  return [r.v.number, r.v.name, r.kind === 'person' ? r.v.role : '', r.kind === 'material' ? r.v.docType : '']
+  return [r.v.number, r.v.name, r.kind === 'standard' ? r.v.description : '', r.kind === 'person' ? r.v.role : '', r.kind === 'material' ? r.v.docType : '']
     .filter(Boolean)
     .join(' · ');
 }
@@ -126,12 +128,13 @@ type Props = {
   row?: Entry;
   title: string;
   close: () => void;
-  save: (v: Entry['v'], links: Entry['links'], file?: File, detach?: boolean) => Promise<void>;
+  save: (v: Entry['v'], links: Entry['links'], file?: File, detach?: boolean, rules?: Entry['rules']) => Promise<void>;
   remove?: () => Promise<void>;
 };
 export function Editor({ project, row, title, close, save, remove }: Props) {
   const [v, setV] = useState({ ...(row?.v || project.v) }),
     [links, setLinks] = useState<Entry['links']>(row?.links || {}),
+    [rules, setRules] = useState(row?.rules || []),
     [file, setFile] = useState<File>(),
     [detach, setDetach] = useState(false);
   const [busy, setBusy] = useState(false),
@@ -174,12 +177,13 @@ export function Editor({ project, row, title, close, save, remove }: Props) {
       [k]: ids,
     }));
   const form = project.rows.find((r) => r.id === links.template?.[0])?.v.form;
+  const matched = row?.kind === 'work' && v.compliance ? matchStandardText(v.compliance, project.rows) : undefined;
   return (
     <Modal title={title} close={close} busy={busy}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          void run(() => save(v, links, file, detach));
+          void run(() => save(v, links, file, detach, rules.length ? rules : undefined));
         }}
       >
         <div className={s.formBody}>
@@ -297,6 +301,11 @@ export function Editor({ project, row, title, close, save, remove }: Props) {
               );
             })}
           </div>
+          {!!matched?.ids.length && <button type="button" className={s.secondary} onClick={() => {
+            changeLink('standards', [...new Set([...(links.standards || []), ...matched.ids])]);
+            put('compliance', matched.remaining);
+          }}>Связать нормативы из текста · {matched.ids.length}</button>}
+          {row?.kind === 'standard' && <StandardRules rules={rules} change={setRules} />}
         </div>
         {error && (
           <div className={s.alert} role="alert">

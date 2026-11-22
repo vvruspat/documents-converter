@@ -1,3 +1,4 @@
+import { evaluateStandardRules, withHiddenWorks } from '../../shared/standard-rules.js';
 import { baseForm } from './forms.js';
 import { BadRequestException } from '@nestjs/common';
 import ExcelJS from 'exceljs';
@@ -160,17 +161,18 @@ export async function report(
   if (pack && (byId.get(pack)?.kind !== 'pack' || byId.get(pack)?.links.phase[0] !== phase))
     throw new BadRequestException('Выберите комплект этой фазы.');
   const linked = (r: Entry, k: string) => (r.links[k] || []).map((id) => byId.get(id)!);
-  const works = p.rows.filter(
+  const selectedWorks = p.rows.filter(
     (r) =>
       r.kind === 'work' &&
       r.links.phase[0] === phase &&
       (!pack || r.links.pack?.includes(pack)) &&
       (!selected.length || selected.includes(r.id)),
   );
-  if (!works.length || selected.some((id) => !works.some((w) => w.id === id)))
+  if (!selectedWorks.length || selected.some((id) => !selectedWorks.some((w) => w.id === id)))
     throw new BadRequestException('В выбранном комплекте нет указанных работ.');
   // A structure act must travel with the hidden-work acts on which it relies.
-  for (const w of works) for (const child of linked(w, 'children')) if (!works.includes(child)) works.push(child);
+  const works = withHiddenWorks(selectedWorks, byId);
+  const requirements: string[][] = [];
   const zip = new JSZip(),
     book = new ExcelJS.Workbook(),
     register: RegisterRow[] = [],
@@ -398,8 +400,22 @@ export async function report(
     );
     if (form === 'incoming')
       Object.assign(props, incomingValues(p, v.number, localDate(v.date), materials, props));
+    const { changes, checks, conflicts } = evaluateStandardRules(w, byId);
+    if (conflicts.length)
+      throw new BadRequestException(
+        'Акт ' + num + ' · разные замены поля «' + conflicts.join(', ') + '». Проверьте правила нормативов.',
+      );
+    for (const [key, change] of changes) {
+      props[key] = [
+        ...new Set([change.replacements.values().next().value ?? props[key], ...change.additions].filter(Boolean)),
+      ].join('\n');
+    }
+    requirements.push(...checks.map((check) => [num, name, check.basis, check.document, check.status]));
     if (!templates.has(t.id)) templates.set(t.id, t.file ? (await asset(t.id)).data : await baseForm(form));
-    add(actFile, await renderForm(templates.get(t.id)!, props, table(materials), form === 'structure'));
+    add(
+      actFile,
+      await renderForm(templates.get(t.id)!, props, table(materials), form === 'structure', [...changes.keys()]),
+    );
   }
   const head = ['№', 'Вид', 'Наименование', 'Номер', 'Дата', 'Организация', 'Листов', 'Файл в комплекте', 'Акт'];
   const registerRows = (rs: RegisterRow[]) =>
@@ -451,6 +467,14 @@ export async function report(
     ]),
     [16, 16, 85, 14, 12, 24],
   );
+  if (requirements.length)
+    sheet(
+      book,
+      'Проверка приложений',
+      ['Акт', 'Работа', 'Основание', 'Требуется', 'Состояние'],
+      requirements,
+      [22, 55, 40, 48, 55],
+    );
   verificationJournal(book, [...usedMaterials]);
   const filename = safe(join(p.v.name, byId.get(phase)!.v.name, packName?.name, packName?.number));
   add('Реестр ' + filename + '.xlsx', await xlsx(book));
