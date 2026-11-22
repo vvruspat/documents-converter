@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { ChevronDown, Download, FileArchive, Pencil, Plus } from 'lucide-react';
 import { WorkRegister } from './WorkRegister';
 import { packagePlan } from '../../shared/readiness';
-import type { Entry, SavedProject } from '../../shared/construction';
+import { entry, type Entry, type SavedProject } from '../../shared/construction';
 import { RecordList, GroupTitle } from '../lists/RecordList';
 import type { Column } from '../lists/model';
 import s from './projects.module.css';
@@ -24,7 +24,7 @@ function PackageCard({
 }: {
   item: Pack;
   initiallyOpen: boolean;
-  edit: (r: Entry) => void;
+  edit: (r: Entry, documents?: boolean) => void;
   plan: (id: string, name: string) => Promise<void>;
   download: (id: string) => void;
 }) {
@@ -61,6 +61,11 @@ function PackageCard({
       </summary>
       {open && (
         <div className={s.planBody}>
+          <div className={s.registerActions}>
+            <button className={s.secondary} onClick={() => edit(entry('work', { name: '' }, { pack: [pack.id] }))}>
+              <Plus size={15} /> Новый акт
+            </button>
+          </div>
           {steps.length > 0 && <WorkRegister steps={steps} packId={pack.id} edit={edit} />}
           <form
             className={s.planForm}
@@ -104,7 +109,7 @@ export function PackageDashboard({
   download,
 }: {
   project: SavedProject;
-  edit: (r: Entry) => void;
+  edit: (r: Entry, documents?: boolean) => void;
   plan: (id: string, name: string) => Promise<void>;
   download: (id: string) => void;
 }) {

@@ -341,6 +341,7 @@ function Workspace({
     });
   const [edit, setEdit] = useState<Entry | 'settings' | null>(null),
     [exporting, setExporting] = useState<string>();
+  const [openDocuments, setOpenDocuments] = useState(false);
   const rows = project.rows.filter((r) => r.kind === tab);
   const columns = useMemo(() => entryColumns(project, tab), [project, tab]);
   const scope = 'construction.' + project.id + '.' + tab;
@@ -348,16 +349,21 @@ function Workspace({
   const [avkTemplate, setAvkTemplate] = useState('');
   const packs = project.rows.filter((r) => r.kind === 'pack'),
     existing = edit && edit !== 'settings' && project.rows.some((r) => r.id === edit.id);
-  async function persist(next: SavedProject, file?: File, id?: string) {
+  async function persist(next: SavedProject, uploads: { id: string; file: File }[] = []) {
     const error = validateProject(next);
     if (error) throw Error(error);
     let init: RequestInit;
-    if (file) {
+    if (uploads.length) {
+      if (uploads.length > 4) throw Error('За одно сохранение можно загрузить до 4 оригиналов.');
+      if (uploads.some(({ file }) => !file.size || file.size > 24 * 1024 * 1024))
+        throw Error('Выберите непустые файлы размером до 24 МБ каждый.');
       const data = new FormData();
       data.append('project', JSON.stringify({ v: next.v, rows: next.rows }));
       data.append('version', String(project.version));
-      data.append('entry', id!);
-      data.append('file', file);
+      for (const { id, file } of uploads) {
+        data.append('entry', id);
+        data.append('file', file);
+      }
       init = { method: 'PUT', body: data };
     } else
       init = { ...json({ project: { v: next.v, rows: next.rows }, version: project.version }), method: 'PUT' };
@@ -530,7 +536,7 @@ function Workspace({
           {tab === 'pack' ? (
             <PackageDashboard
               project={project}
-              edit={setEdit}
+              edit={(r, documents = false) => { setOpenDocuments(documents); setEdit(r); }}
               download={setExporting}
               plan={(id, name) =>
                 persist({ ...project, rows: [...project.rows, entry('work', { name }, { pack: [id] })] })
@@ -580,26 +586,28 @@ function Workspace({
         {edit && (
           <Editor
             project={project}
+            openDocuments={tab === 'pack' && edit !== 'settings' && edit.kind === 'work' && openDocuments}
+            drawer={tab === 'pack' && edit !== 'settings' && edit.kind === 'work'}
             row={edit === 'settings' ? undefined : edit}
-            title={edit === 'settings' ? 'Реквизиты и настройки' : single[edit.kind]}
+            title={edit === 'settings' ? 'Реквизиты и настройки' : edit.kind === 'work' && !existing ? 'Новый акт' : single[edit.kind]}
             close={() => setEdit(null)}
             remove={
               existing
                 ? () => persist({ ...project, rows: project.rows.filter((r) => r.id !== edit.id) })
                 : undefined
             }
-            save={(v, links, file, detach, rules) => {
+            save={(v, links, file, detach, rules, documents = []) => {
               if (edit === 'settings') return persist({ ...project, v });
               const r = { ...edit, v, links, rules };
               if (detach) delete r.file;
-              return persist(
-                {
-                  ...project,
-                  rows: existing ? project.rows.map((x) => (x.id === r.id ? r : x)) : [...project.rows, r],
-                },
-                file,
-                r.id,
-              );
+              const rows = new Map(project.rows.map((item) => [item.id, item]));
+              const uploads = file ? [{ id: r.id, file }] : [];
+              rows.set(r.id, r);
+              for (const doc of documents) {
+                rows.set(doc.row.id, doc.row);
+                if (doc.file) uploads.push({ id: doc.row.id, file: doc.file });
+              }
+              return persist({ ...project, rows: [...rows.values()] }, uploads);
             }}
           />
         )}

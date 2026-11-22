@@ -17,7 +17,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { ExpressAdapter, FileInterceptor, FileFieldsInterceptor } from '@nestjs/platform-express';
+import { ExpressAdapter, FileInterceptor, FilesInterceptor, FileFieldsInterceptor } from '@nestjs/platform-express';
 import express from 'express';
 import { z } from 'zod';
 import { safeFilename } from '../history.js';
@@ -88,11 +88,13 @@ class ProjectsController {
     return this.store.get(id);
   }
   @Put(':id')
-  @UseInterceptors(fileUpload)
+  @UseInterceptors(FilesInterceptor('file', 4, {
+    limits: { fileSize: 24 * 1024 * 1024, files: 4, fields: 6, fieldSize: 4 * 1024 * 1024 },
+  }))
   async put(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: Record<string, unknown>,
-    @UploadedFile() f?: Express.Multer.File,
+    @UploadedFiles() files: Express.Multer.File[] = [],
   ) {
     let project = body.project;
     if (typeof project === 'string') {
@@ -103,18 +105,25 @@ class ProjectsController {
       }
     }
     const data = this.store.validate(project);
-    if (!f) return this.store.save(id, revision(body.version), data);
-    const row = data.rows.find((r) => r.id === body.entry);
-    if (!row || !['material', 'protocol', 'scheme', 'template'].includes(row.kind))
-      throw new BadRequestException('Выберите запись для файла.');
-    const name = safeFilename(f.originalname);
-    if (row.kind === 'template') {
-      await templateFile(f.buffer);
-      if (!/\.docx$/i.test(name)) throw new BadRequestException('Шаблон должен быть в формате DOCX.');
-      delete row.v.needsFile;
+    const entries = body.entry === undefined ? [] : Array.isArray(body.entry) ? body.entry : [body.entry];
+    if (entries.length !== files.length || new Set(entries).size !== entries.length)
+      throw new BadRequestException('Каждый файл должен соответствовать отдельной записи.');
+    const uploads = [];
+    for (const [index, f] of files.entries()) {
+      fileRequired(f);
+      const row = data.rows.find((r) => r.id === entries[index]);
+      if (!row || !['material', 'protocol', 'scheme', 'template'].includes(row.kind))
+        throw new BadRequestException('Выберите запись для файла.');
+      const name = safeFilename(f.originalname);
+      if (row.kind === 'template') {
+        await templateFile(f.buffer);
+        if (!/\.docx$/i.test(name)) throw new BadRequestException('Шаблон должен быть в формате DOCX.');
+        delete row.v.needsFile;
+      }
+      row.file = name;
+      uploads.push({ entry: row.id, name, data: f.buffer });
     }
-    row.file = name;
-    return this.store.save(id, revision(body.version), data, { entry: row.id, name, data: f.buffer });
+    return this.store.save(id, revision(body.version), data, uploads);
   }
   @Get(':id/file/:entry')
   async file(
