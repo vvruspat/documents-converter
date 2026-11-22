@@ -53,6 +53,9 @@
 .line > td {
   line-height: 1.35;
 }
+.line {
+  cursor: pointer;
+}
 .line:hover {
   background: var(--hover);
 }
@@ -162,4 +165,15 @@
   .scroll {
     max-height: 65vh;
   }
+}
+
+.line .evidenceButton {
+  display: block;
+  width: 100%;
+  min-height: 24px;
+  padding: 0;
+  text-align: left;
+}
+.evidenceButton:hover {
+  text-decoration: underline;
 }

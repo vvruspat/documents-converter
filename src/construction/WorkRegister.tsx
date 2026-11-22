@@ -68,7 +68,7 @@ function Count({ present, total }: { present: number; total: number }) {
   );
 }
 const date = (value?: string) => value?.replace(/^(\d{4})-(\d{2})-(\d{2})$/, '$3.$2.$1') || '—';
-function RegisterLine({ row, edit }: { row: Row; edit: (r: Entry) => void }) {
+function RegisterLine({ row, edit }: { row: Row; edit: (r: Entry, documents?: boolean) => void }) {
   const [expanded, setExpanded] = useState(false);
   const { work, fields, documents, position } = row;
   const name = work.v.name || 'Шаг без названия';
@@ -77,7 +77,15 @@ function RegisterLine({ row, edit }: { row: Row; edit: (r: Entry) => void }) {
   const title = 'Подробности шага ' + position;
   return (
     <>
-      <tr className={s.line}>
+      <tr
+        className={s.line}
+        onClick={(event) => {
+          if (!(event.target as Element).closest('button')) {
+            event.currentTarget.querySelector<HTMLButtonElement>('th button')?.focus({ preventScroll: true });
+            edit(work);
+          }
+        }}
+      >
         <td>
           <button
             type="button"
@@ -106,10 +114,24 @@ function RegisterLine({ row, edit }: { row: Row; edit: (r: Entry) => void }) {
           <Mark present={!!signers?.present} />
         </td>
         <td>
-          <Count present={row.linked} total={documents.length} />
+          <button
+            type="button"
+            className={s.evidenceButton}
+            aria-label={'Документы · ' + name}
+            onClick={() => edit(work, true)}
+          >
+            <Count present={row.linked} total={documents.length} />
+          </button>
         </td>
         <td>
-          <Count present={row.files} total={documents.length} />
+          <button
+            type="button"
+            className={s.evidenceButton}
+            aria-label={'Оригиналы · ' + name}
+            onClick={() => edit(work, true)}
+          >
+            <Count present={row.files} total={documents.length} />
+          </button>
         </td>
         <td>
           <span className={s.state} data-status={row.status}>
@@ -169,7 +191,7 @@ export function WorkRegister({
 }: {
   steps: Step[];
   packId: string;
-  edit: (r: Entry) => void;
+  edit: (r: Entry, documents?: boolean) => void;
 }) {
   const rows = useMemo(() => steps.map(registerRow), [steps]);
   return (

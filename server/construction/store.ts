@@ -84,7 +84,7 @@ export class ProjectStore {
     id: string,
     version: number,
     input: unknown,
-    upload?: Asset & { entry: string },
+    uploads: (Asset & { entry: string })[] = [],
   ): Promise<SavedProject> {
     const data = this.validate(input);
     await this.ready();
@@ -97,7 +97,7 @@ export class ProjectStore {
         [id, version, data],
       );
       if (!result.rowCount) throw new ConflictException('Проект изменился. Обновите страницу и повторите правку.');
-      if (upload)
+      for (const upload of uploads)
         await client.query(
           `INSERT INTO ${this.ns}.construction_assets VALUES ($1,$2,$3,$4)
         ON CONFLICT(project,entry) DO UPDATE SET name=excluded.name,data=excluded.data`,

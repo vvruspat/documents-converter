@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Download, X, ScanText, Trash2 } from 'lucide-react';
 import {
@@ -12,6 +12,7 @@ import {
   type Field,
   type SavedProject,
 } from '../../shared/construction';
+import { ActDocuments, isDocumentLink, type DocumentDraft } from './ActDocuments';
 import { StandardRules } from './StandardRules';
 import s from './projects.module.css';
 
@@ -19,9 +20,10 @@ export async function api(url: string, options?: RequestInit) {
   const response = await fetch('/api/construction' + url, options);
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    const fallback = response.status === 413
-      ? 'Размер загружаемых файлов превышает ограничение сервера.'
-      : 'Сервер не смог выполнить запрос (HTTP ' + response.status + ').';
+    const fallback =
+      response.status === 413
+        ? 'Размер загружаемых файлов превышает ограничение сервера.'
+        : 'Сервер не смог выполнить запрос (HTTP ' + response.status + ').';
     throw Error(body.message || body.error || fallback);
   }
   return response;
@@ -31,12 +33,17 @@ export function Modal({
   close,
   children,
   busy = false,
+  drawer = false,
+  subtitle,
 }: {
   title: string;
   close: () => void;
   children: ReactNode;
   busy?: boolean;
+  subtitle?: string;
+  drawer?: boolean;
 }) {
+  const opener = useRef(document.activeElement);
   return (
     <Dialog.Root
       open
@@ -46,9 +53,21 @@ export function Modal({
     >
       <Dialog.Portal>
         <Dialog.Overlay className={s.overlay} />
-        <Dialog.Content className={s.dialog} aria-describedby={undefined}>
+        <Dialog.Content
+          className={drawer ? s.dialog + ' ' + s.drawer : s.dialog}
+          aria-describedby={undefined}
+          onCloseAutoFocus={(e) => {
+            if (drawer && opener.current instanceof HTMLElement && opener.current.isConnected) {
+              e.preventDefault();
+              opener.current.focus({ preventScroll: true });
+            }
+          }}
+        >
           <div className={s.modalHeading}>
-            <Dialog.Title>{title}</Dialog.Title>
+            <div className={s.dialogTitle}>
+              <Dialog.Title>{title}</Dialog.Title>
+              {subtitle && <small title={subtitle}>{subtitle}</small>}
+            </div>
             <Dialog.Close disabled={busy} className={s.icon} aria-label="Закрыть">
               <X size={19} />
             </Dialog.Close>
@@ -61,9 +80,17 @@ export function Modal({
 }
 const fileKinds = ['template', 'material', 'scheme', 'protocol'];
 export function recordTitle(r: Entry) {
-  return [r.v.number, r.v.name, r.kind === 'standard' ? r.v.description : '', r.kind === 'person' ? r.v.role : '', r.kind === 'material' ? r.v.docType : '']
-    .filter(Boolean)
-    .join(' · ') || 'Шаг без названия';
+  return (
+    [
+      r.v.number,
+      r.v.name,
+      r.kind === 'standard' ? r.v.description : '',
+      r.kind === 'person' ? r.v.role : '',
+      r.kind === 'material' ? r.v.docType : '',
+    ]
+      .filter(Boolean)
+      .join(' · ') || 'Шаг без названия'
+  );
 }
 function Links({
   field,
@@ -124,14 +151,32 @@ function Links({
   );
 }
 type Props = {
+  drawer?: boolean;
+  openDocuments?: boolean;
   project: SavedProject;
   row?: Entry;
   title: string;
   close: () => void;
-  save: (v: Entry['v'], links: Entry['links'], file?: File, detach?: boolean, rules?: Entry['rules']) => Promise<void>;
+  save: (
+    v: Entry['v'],
+    links: Entry['links'],
+    file?: File,
+    detach?: boolean,
+    rules?: Entry['rules'],
+    documents?: DocumentDraft[],
+  ) => Promise<void>;
   remove?: () => Promise<void>;
 };
-export function Editor({ project, row, title, close, save, remove }: Props) {
+export function Editor({
+  project,
+  row,
+  title,
+  close,
+  save,
+  remove,
+  drawer = false,
+  openDocuments = false,
+}: Props) {
   const [v, setV] = useState({ ...(row?.v || project.v) }),
     [links, setLinks] = useState<Entry['links']>(row?.links || {}),
     [rules, setRules] = useState(row?.rules || []),
@@ -142,6 +187,13 @@ export function Editor({ project, row, title, close, save, remove }: Props) {
     [parseNote, setParseNote] = useState(''),
     [source, setSource] = useState(''),
     [confirm, setConfirm] = useState(false);
+  const [section, setSection] = useState<'act' | 'documents'>(openDocuments ? 'documents' : 'act');
+  const [drafts, setDrafts] = useState(new Map<string, DocumentDraft>());
+  const docIds = new Set(
+    Object.entries(links)
+      .filter(([key]) => isDocumentLink(key))
+      .flatMap(([, ids]) => ids),
+  );
   const spec = row ? fields[row.kind] : projectFields;
   const put = (k: string, value: string) => setV((prior) => ({ ...prior, [k]: value }));
   async function run(action: () => Promise<void>) {
@@ -178,14 +230,44 @@ export function Editor({ project, row, title, close, save, remove }: Props) {
   const form = project.rows.find((r) => r.id === links.template?.[0])?.v.form;
   const matched = row?.kind === 'work' && v.compliance ? matchStandardText(v.compliance, project.rows) : undefined;
   return (
-    <Modal title={title} close={close} busy={busy}>
+    <Modal title={title} close={close} busy={busy} drawer={drawer} subtitle={drawer ? v.name : undefined}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          void run(() => save(v, links, file, detach, rules.length ? rules : undefined));
+          void run(() =>
+            save(
+              v,
+              links,
+              file,
+              detach,
+              rules.length ? rules : undefined,
+              [...drafts.values()].filter((d) => docIds.has(d.row.id)),
+            ),
+          );
         }}
       >
-        <div className={s.formBody}>
+        {drawer && (
+          <div className={s.drawerTabs} role="group" aria-label="Разделы акта">
+            <button type="button" aria-pressed={section === 'act'} onClick={() => setSection('act')}>
+              Акт
+            </button>
+            <button type="button" aria-pressed={section === 'documents'} onClick={() => setSection('documents')}>
+              Документы · {docIds.size}
+            </button>
+          </div>
+        )}
+        {section === 'documents' && (
+          <div className={s.formBody}>
+            <ActDocuments
+              project={project}
+              links={links}
+              drafts={drafts}
+              changeLink={changeLink}
+              changeDraft={(doc) => setDrafts((prev) => new Map(prev).set(doc.row.id, doc))}
+            />
+          </div>
+        )}
+        <div className={s.formBody} hidden={section !== 'act'}>
           {row && fileKinds.includes(row.kind) && (
             <div className={s.fileBox}>
               <label className={s.field}>
@@ -241,6 +323,7 @@ export function Editor({ project, row, title, close, save, remove }: Props) {
           )}
           <div className={s.formGrid}>
             {spec.map((field) => {
+              if (drawer && isDocumentLink(field.key)) return null;
               if (
                 row?.kind === 'work' &&
                 ['children', 'use', 'load', 'loadTerms'].includes(field.key) &&
@@ -298,10 +381,18 @@ export function Editor({ project, row, title, close, save, remove }: Props) {
               );
             })}
           </div>
-          {!!matched?.ids.length && <button type="button" className={s.secondary} onClick={() => {
-            changeLink('standards', [...new Set([...(links.standards || []), ...matched.ids])]);
-            put('compliance', matched.remaining);
-          }}>Связать нормативы из текста · {matched.ids.length}</button>}
+          {!!matched?.ids.length && (
+            <button
+              type="button"
+              className={s.secondary}
+              onClick={() => {
+                changeLink('standards', [...new Set([...(links.standards || []), ...matched.ids])]);
+                put('compliance', matched.remaining);
+              }}
+            >
+              Связать нормативы из текста · {matched.ids.length}
+            </button>
+          )}
           {row?.kind === 'standard' && <StandardRules rules={rules} change={setRules} />}
         </div>
         {error && (
