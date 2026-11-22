@@ -522,7 +522,6 @@
   flex: none;
 }
 .switcher select,
-.phaseSelect,
 .listFoot select {
   min-width: 0;
   font: inherit;
@@ -537,13 +536,6 @@
   font-size: 13px;
   font-weight: 550;
 }
-.phaseSelect {
-  max-width: clamp(78px, 16vw, 240px);
-  flex-shrink: 0;
-  background: transparent;
-  font-size: 13px;
-}
-.phaseSelect option,
 .switcher option {
   background: var(--surface);
   color: var(--fg);
@@ -823,5 +815,212 @@
   }
   .inspector {
     scrollbar-gutter: stable;
+  }
+}
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 16px 0;
+}
+.metrics > div,
+.package {
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.metrics > div {
+  padding: 12px 16px;
+  display: grid;
+  gap: 4px;
+  color: var(--sub);
+  font-size: 12px;
+}
+.metrics strong {
+  font-size: 24px;
+  color: var(--fg);
+  font-weight: 570;
+  font-variant-numeric: tabular-nums;
+}
+.package {
+  margin: 6px 0;
+}
+.package summary,
+.step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+}
+.package summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+  color: var(--sub);
+}
+.package summary::-webkit-details-marker {
+  display: none;
+}
+.package summary strong {
+  font-size: 14px;
+  color: var(--fg);
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.package summary svg {
+  flex: none;
+}
+.package[open] summary > svg:last-child {
+  transform: rotate(180deg);
+}
+.status {
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--sub);
+  background: var(--input);
+  border-radius: 5px;
+  padding: 3px 7px;
+}
+.status[data-status='Готово'] {
+  background: light-dark(#def5e6, #1c392d);
+  color: light-dark(#176439, #9ce4b9);
+}
+.status[data-status='Нужно заполнить'] {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.planBody {
+  border-top: 1px solid var(--edge);
+  padding: 6px 12px 10px;
+}
+.step {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--edge);
+  color: var(--fg);
+  padding: 9px 2px;
+}
+.step:hover {
+  background: var(--hover);
+}
+.step > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.step strong {
+  font-size: 13px;
+  font-weight: 540;
+}
+.step small {
+  display: block;
+  color: var(--sub);
+  line-height: 1.5;
+  margin-top: 2px;
+}
+.stepIndex {
+  color: var(--sub);
+  font-variant-numeric: tabular-nums;
+  min-width: 22px;
+}
+.planForm {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+.planForm input {
+  flex: 1;
+  min-width: 0;
+  background: var(--input);
+  color: var(--fg);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+@media (max-width: 640px) {
+  .metrics {
+    gap: 5px;
+  }
+  .metrics > div {
+    padding: 8px;
+  }
+  .package summary,
+  .step {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .package summary strong {
+    min-width: 65%;
+  }
+  .step .status {
+    margin-left: 26px;
+  }
+  .planForm {
+    flex-wrap: wrap;
+  }
+}
+
+.importOption {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 12px 0;
+  font-size: 13px;
+}
+.stepCard {
+  border-bottom: 1px solid var(--edge);
+  padding: 3px 0 10px;
+}
+.stepCard .step {
+  border: 0;
+}
+.workChecks {
+  display: grid;
+  gap: 8px;
+  padding: 4px 0;
+}
+.stepCard .workChecks {
+  margin-left: 34px;
+}
+.checkHeading {
+  display: block;
+  font-size: 11px;
+  color: var(--sub);
+  font-weight: 550;
+  margin-bottom: 4px;
+}
+.workChecks ul {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 0;
+}
+.workChecks li {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  color: var(--sub);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.workChecks li svg {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 2px;
+}
+.workChecks li[data-present='true'] {
+  color: var(--fg);
+}
+.workChecks li[data-present='true'] svg {
+  color: light-dark(#167349, #75d7a1);
+  stroke-width: 2.8;
+}
+@media (max-width: 640px) {
+  .stepCard .workChecks {
+    margin-left: 2px;
   }
 }

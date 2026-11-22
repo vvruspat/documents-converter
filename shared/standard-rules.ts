@@ -59,7 +59,8 @@ export function evaluateStandardRules(work: Entry, byId: Map<string, Entry>) {
     string,
     { label: string; sources: Set<string>; additions: Set<string>; replacements: Set<string> }
   >();
-  const checks: { basis: string; document: string; complete: boolean; status: string }[] = [];
+  const checks: { basis: string; document: string; matchedIds: string[]; complete: boolean; status: string }[] =
+    [];
   for (const standard of linked(work, 'standards')) {
     for (const rule of standard.rules || []) {
       if (rule.form !== form || !normalized(work.v.name).includes(normalized(rule.workContains))) continue;
@@ -72,6 +73,7 @@ export function evaluateStandardRules(work: Entry, byId: Map<string, Entry>) {
         const files = matches.filter((row) => row.file);
         checks.push({
           basis,
+          matchedIds: [...new Set(matches.map((r) => r.id))],
           complete: files.length > 0,
           document: [attachments[rule.category], rule.document].filter(Boolean).join(' · '),
           status: files.length

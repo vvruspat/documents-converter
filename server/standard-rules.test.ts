@@ -7,23 +7,23 @@ import { evaluateStandardRules, type StandardRule } from '../shared/standard-rul
 import { report } from './construction/report.js';
 
 test('standard rules apply to the selected act and its real attachments in the exported files', async () => {
-  const phase = entry('phase', { name: 'Фаза' });
+  const pack = entry('pack', { name: 'Комплект' });
   const template = entry('template', { name: 'АОСР', form: 'hidden' });
   const standard = entry('standard', { name: 'Тестовый норматив' });
   const original = entry('protocol', { name: 'Проверка', docType: 'Акт испытаний' });
   const work = entry(
     'work',
     { name: 'Монтаж сети', number: '01', date: '2026-01-01', notes: 'Ручной текст' },
-    { template: [template.id], phase: [phase.id], standards: [standard.id] },
+    { template: [template.id], pack: [pack.id], standards: [standard.id] },
   );
   const scope = { form: 'hidden', clause: 'п. 1', workContains: 'МОНТАЖ' } as const;
   const rule: StandardRule = { ...scope, action: 'append', field: 'notes', text: 'Дополнение' };
   standard.rules = [rule, { ...scope, action: 'require', category: 'protocols', document: 'Акт испытаний' }];
   const project: SavedProject = {
-    id: phase.id,
+    id: pack.id,
     version: 1,
     v: { name: 'Проект' },
-    rows: [phase, template, standard, original, work],
+    rows: [pack, template, standard, original, work],
   };
   assert.ok(projectSchema.safeParse(project).success);
   const inspect = () => evaluateStandardRules(work, new Map(project.rows.map((r) => [r.id, r])));
@@ -32,7 +32,7 @@ test('standard rules apply to the selected act and its real attachments in the e
   assert.equal(inspect().checks[0].status, 'Загрузите оригинал');
   original.file = 'test.pdf';
   const generate = () =>
-    report(project, phase.id, '', [], async () => ({ name: 'test.pdf', data: Buffer.from('test') }));
+    report(project, pack.id, [], async () => ({ name: 'test.pdf', data: Buffer.from('test') }));
   const zip = await JSZip.loadAsync((await generate()).data);
   const doc = await JSZip.loadAsync(await zip.file(/\.docx$/)[0].async('nodebuffer'));
   assert.match(await doc.file('word/document.xml')!.async('string'), /Ручной текст.*Дополнение/s);
@@ -47,7 +47,7 @@ test('standard rules apply to the selected act and its real attachments in the e
     { ...rule, action: 'replace', text: 'Замена' },
     { ...rule, action: 'replace', text: 'Вторая' },
   );
-  await assert.rejects(generate, /разные замены/);
+  await assert.rejects(generate, /разные замены/i);
   standard.rules.pop();
   const replaced = await JSZip.loadAsync((await generate()).data);
   const replacedDoc = await JSZip.loadAsync(await replaced.file(/\.docx$/)[0].async('nodebuffer'));

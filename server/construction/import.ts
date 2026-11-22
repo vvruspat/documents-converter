@@ -3,11 +3,18 @@ import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { BadRequestException } from '@nestjs/common';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { entry, formTypes, matchStandardText, type Entry, type Kind, type Project } from '../../shared/construction.js';
+import {
+  entry,
+  formTypes,
+  matchStandardText,
+  type Entry,
+  type Kind,
+  type Project,
+} from '../../shared/construction.js';
 import { openOfficeZip } from './office.js';
 
 export const formsDir = path.resolve('server/construction/forms');
-export async function newProject(name: string, phaseName: string, withStandards = true): Promise<Project> {
+export async function newProject(name: string, packName: string, withStandards = true): Promise<Project> {
   const standards: [string, string][] = withStandards
     ? JSON.parse(await readFile(path.join(formsDir, 'standards.json'), 'utf8'))
     : [];
@@ -24,7 +31,7 @@ export async function newProject(name: string, phaseName: string, withStandards 
       order: 'Схемы, протоколы, материалы',
     },
     rows: [
-      entry('phase', { name: phaseName }),
+      entry('pack', { name: packName }),
       ...Object.entries(formTypes).map(([form, name]) => entry('template', { name, form })),
       ...standards.map(([name, description]) => entry('standard', { name, description })),
     ],
@@ -73,7 +80,7 @@ export async function readImportWorkbook(buffer: Buffer): Promise<ExcelJS.Workbo
   }
 }
 
-export async function importBook(buffer: Buffer, phaseName: string) {
+export async function importBook(buffer: Buffer, packName: string, includeNotes = false) {
   const book = await readImportWorkbook(buffer);
   const sheet = (name: string) => {
     const found = book.getWorksheet(name);
@@ -83,8 +90,8 @@ export async function importBook(buffer: Buffer, phaseName: string) {
   const req = sheet('Реквизиты'),
     setting = sheet('Настройки'),
     rv = (n: number) => text(req.getCell('B' + n));
-  const p = await newProject(rv(4) || 'Импортированный проект', phaseName, false),
-    phase = p.rows[0].id,
+  const p = await newProject(rv(4) || 'Импортированный проект', packName, false),
+    fallbackPack = p.rows[0],
     warnings = new Set<string>();
   p.v.object = rv(4);
   p.v.address = rv(5);
@@ -219,8 +226,7 @@ export async function importBook(buffer: Buffer, phaseName: string) {
     if (g(1)) add('standard', g(1), { name: g(1), description: g(2) });
   });
   const pack = (id: string, name?: string, num?: string) =>
-    source.get('pack:' + id)?.[0] ??
-    add('pack', id, { name: name || 'Комплект ' + id, number: num || id }, { phase: [phase] });
+    source.get('pack:' + id)?.[0] ?? add('pack', id, { name: name || 'Комплект ' + id, number: num || id });
   records('ИД', 5, (g) => {
     if (g(1) && (g(2) || g(3))) pack(g(1), g(2), g(3));
   });
@@ -236,17 +242,29 @@ export async function importBook(buffer: Buffer, phaseName: string) {
     return [...new Set(ids)];
   }
   const parents: [Entry, string][] = [];
-  records('Акты', 4, (g) => {
-    if (!g(5)) return;
+  let noteRows = 0;
+  sheet('Акты').eachRow((row, n) => {
+    if (n < 4) return;
+    const g = (col: number) => text(row.getCell(col));
+    const entered = (col: number) => row.getCell(col).type !== ExcelJS.ValueType.Formula && Boolean(g(col));
+    // ID, form, signers and copies are prefilled on unused template rows.
+    const workColumns = [2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 17, 20, 21, 22, 31, 32, 35];
+    if (!g(5) && !workColumns.some(entered)) {
+      if (![16, 18, 33, 34, 36, 38, 40, 41].some(entered)) return;
+      if (!includeNotes) {
+        noteRows++;
+        return;
+      }
+    }
     let tpl = p.rows.find((r) => r.kind === 'template' && r.v.name === g(3));
-    if (!tpl) {
+    if (!tpl && g(3)) {
       tpl = add('template', g(3), {
         name: g(3) || 'АОСР',
         form: g(3).includes('АООК') ? 'structure' : 'hidden',
         needsFile: 'да',
       });
     }
-    if (tpl.v.needsFile === 'да') warnings.add('Загрузите DOCX для шаблона «' + tpl.v.name + '».');
+    if (tpl?.v.needsFile === 'да') warnings.add('Загрузите DOCX для шаблона «' + tpl.v.name + '».');
     const v = {
       sourceId: g(1),
       ...values(
@@ -274,8 +292,7 @@ export async function importBook(buffer: Buffer, phaseName: string) {
     const matched = matchStandardText(g(34), p.rows);
     const links = {
       standards: matched.ids,
-      phase: [phase],
-      template: [tpl.id],
+      template: tpl ? [tpl.id] : [],
       pack: g(17)
         .split(/[,;\s]+/)
         .filter(Boolean)
@@ -285,6 +302,7 @@ export async function importBook(buffer: Buffer, phaseName: string) {
       schemes: resolve('scheme', g(32)),
       protocols: resolve('protocol', g(35)),
     };
+    if (!links.pack.length) links.pack = [fallbackPack.id];
     const work = add('work', g(1), { ...v, compliance: matched.remaining }, links);
     if (g(18)) parents.push([work, g(18)]);
   });
@@ -296,6 +314,16 @@ export async function importBook(buffer: Buffer, phaseName: string) {
         parent.links.children.push(child.id);
       else warnings.add('Проверьте ссылку на скрытые работы ' + key + ' в АООК ' + parent.v.number);
     }
+  }
+  if (noteRows)
+    warnings.add(
+      'Пропущены строки только с дополнительными сведениями: ' + noteRows + '. Их можно включить при импорте.',
+    );
+  if (
+    p.rows.some((r) => r.kind === 'pack' && r !== fallbackPack) &&
+    !p.rows.some((r) => r.links.pack?.includes(fallbackPack.id))
+  ) {
+    p.rows = p.rows.filter((r) => r !== fallbackPack);
   }
   return { project: p, warnings: [...warnings] };
 }

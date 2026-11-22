@@ -2,7 +2,6 @@ import { z } from 'zod';
 import { ruleSchema, bookmark } from './standard-rules.js';
 
 export const kinds = [
-  'phase',
   'pack',
   'work',
   'person',
@@ -14,7 +13,6 @@ export const kinds = [
 ] as const;
 export type Kind = (typeof kinds)[number];
 export const labels: Record<Kind, string> = {
-  phase: 'Фазы',
   pack: 'Комплекты',
   work: 'Акты и работы',
   person: 'Ответственные лица',
@@ -68,8 +66,7 @@ const documentFields = [
   f('pages', 'Число листов'),
 ];
 export const fields: Record<Kind, Field[]> = {
-  phase: [title('Название фазы')],
-  pack: [title('Название комплекта'), f('number', 'Номер комплекта'), link('phase', 'Фаза', 'phase', false, true)],
+  pack: [title('Название комплекта'), f('number', 'Номер комплекта')],
   person: [
     title('Фамилия, имя, отчество'),
     choice('role', 'Представитель', [...roles, 'Иное лицо']),
@@ -109,10 +106,9 @@ export const fields: Record<Kind, Field[]> = {
     choice('form', 'Вид акта', Object.keys(formTypes)),
   ],
   work: [
-    title('Выполненные работы'),
-    link('phase', 'Фаза', 'phase', false, true),
-    link('pack', 'Комплекты ИД', 'pack', true),
-    link('template', 'Шаблон акта', 'template', false, true),
+    f('name', 'Выполненные работы'),
+    link('pack', 'Комплекты ИД', 'pack', true, true),
+    link('template', 'Шаблон акта', 'template'),
     f('number', 'Номер акта'),
     f('suffix', 'Суффикс'),
     f('start', 'Начало работ', 'date'),
@@ -192,7 +188,7 @@ export interface SavedProject extends Project {
   id: string;
   version: number;
 }
-export type ProjectSummary = { id: string; name: string; phases: number; works: number };
+export type ProjectSummary = { id: string; name: string; packs: number; works: number };
 export function entry(kind: Kind, v: Record<string, string>, links: Entry['links'] = {}): Entry {
   // Web Crypto randomUUID requires HTTPS. getRandomValues also works on a local HTTP preview.
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -279,19 +275,16 @@ export function validateProject(p: Project): string | undefined {
     }
     if (row.kind === 'template' && !Object.hasOwn(formTypes, row.v.form)) return prefix + 'выберите вид акта.';
     if (row.kind === 'work') {
-      const phase = row.links.phase[0];
-      if (row.links.pack?.some((id) => byId.get(id)?.links.phase?.[0] !== phase))
-        return prefix + 'комплект относится к другой фазе.';
       const form = (work: Entry) => byId.get(work.links.template?.[0])?.v.form;
       if (
         row.links.children?.length &&
         (form(row) !== 'structure' ||
           row.links.children.some((id) => {
             const child = byId.get(id)!;
-            return child.links.phase?.[0] !== phase || form(child) !== 'hidden';
+            return form(child) !== 'hidden';
           }))
       )
-        return prefix + 'для АООК выберите АОСР этой фазы.';
+        return prefix + 'для АООК выберите АОСР проекта.';
       if (row.v.start && row.v.end && row.v.start > row.v.end) return prefix + 'окончание раньше начала работ.';
     }
   }

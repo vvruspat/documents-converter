@@ -1,3 +1,6 @@
+import { PackageDashboard } from './PackageDashboard';
+import { WorkChecklist } from './WorkChecklist';
+import { assessWorks } from '../../shared/readiness';
 import { RecordList, GroupTitle } from '../lists/RecordList';
 import { entryColumns, projectColumns } from './listColumns';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -38,21 +41,10 @@ import { StandardsBrowser } from './StandardsBrowser';
 import { AppShell, type ShellProps } from '../AppShell';
 import s from './projects.module.css';
 
-const sections: Kind[] = [
-  'work',
-  'pack',
-  'phase',
-  'material',
-  'scheme',
-  'protocol',
-  'person',
-  'standard',
-  'template',
-];
+const sections: Kind[] = ['pack', 'work', 'material', 'scheme', 'protocol', 'person', 'standard', 'template'];
 const icons = {
   work: ClipboardList,
   pack: FileArchive,
-  phase: Layers3,
   person: Users,
   material: FileCheck2,
   scheme: Files,
@@ -63,7 +55,6 @@ const icons = {
 const single: Record<Kind, string> = {
   work: 'Акт',
   pack: 'Комплект',
-  phase: 'Фаза',
   person: 'Ответственное лицо',
   material: 'Материал и сертификат',
   scheme: 'Исполнительная схема',
@@ -86,7 +77,8 @@ function ProjectStart({
   created: (p: SavedProject, warnings: string[]) => void;
 }) {
   const [name, setName] = useState(''),
-    [phase, setPhase] = useState(''),
+    [pack, setPack] = useState(''),
+    [includeNotes, setIncludeNotes] = useState(false),
     [file, setFile] = useState<File>(),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
@@ -98,11 +90,12 @@ function ProjectStart({
       if (mode === 'import' && file) {
         const data = new FormData();
         data.append('file', file);
-        data.append('phase', phase);
+        data.append('pack', pack);
+        if (includeNotes) data.append('includeNotes', 'true');
         for (const [key, form] of Object.entries(forms)) data.append(key, form);
         const result = await (await api('/import', { method: 'POST', body: data })).json();
         created(result.project, result.warnings);
-      } else created(await (await api('', json({ name, phase }))).json(), []);
+      } else created(await (await api('', json({ name, pack }))).json(), []);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -135,9 +128,20 @@ function ProjectStart({
             </label>
           )}
           <label className={s.field}>
-            Первая фаза
-            <input required placeholder="Фундамент" value={phase} onChange={(e) => setPhase(e.target.value)} />
+            {mode === 'create' ? 'Первый комплект' : 'Комплект для работ без привязки в Excel'}
+            <input
+              required={mode === 'create'}
+              placeholder={mode === 'create' ? 'Фундамент' : 'Основной комплект'}
+              value={pack}
+              onChange={(e) => setPack(e.target.value)}
+            />
           </label>
+          {mode === 'import' && (
+            <label className={s.importOption}>
+              <input type="checkbox" checked={includeNotes} onChange={(e) => setIncludeNotes(e.target.checked)} />
+              Включить строки только с дополнительными сведениями
+            </label>
+          )}
           {mode === 'import' && (
             <details className={s.extraForms}>
               <summary>Приложить исходные шаблоны Word</summary>
@@ -179,28 +183,36 @@ function ProjectStart({
     </Modal>
   );
 }
-function Export({ project, phase, close }: { project: SavedProject; phase: string; close: () => void }) {
-  const [pack, setPack] = useState(''),
+function Export({
+  project,
+  initialPack,
+  close,
+}: {
+  project: SavedProject;
+  initialPack: string;
+  close: () => void;
+}) {
+  const [pack, setPack] = useState(initialPack),
     [selected, setSelected] = useState<string[]>([]),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
-  const packs = project.rows.filter((r) => r.kind === 'pack' && r.links.phase[0] === phase);
-  const works = project.rows.filter(
-    (r) => r.kind === 'work' && r.links.phase[0] === phase && (!pack || r.links.pack?.includes(pack)),
-  );
+  const packs = project.rows.filter((r) => r.kind === 'pack');
+  const works = project.rows.filter((r) => r.kind === 'work' && r.links.pack?.includes(pack));
   const byId = new Map(project.rows.map((r) => [r.id, r]));
   const included = withHiddenWorks(selected.length ? works.filter((r) => selected.includes(r.id)) : works, byId);
   const count = included.length;
   const reviews = included
     .map((work) => ({ work, ...evaluateStandardRules(work, byId) }))
-    .filter((item) => item.checks.length || item.changes.size);
-  const incomplete = reviews.some((item) => item.checks.some((check) => !check.complete));
-  const hasConflict = reviews.some((item) => item.conflicts.length);
+    .filter((item) => item.changes.size);
+  const assessments = assessWorks(byId);
+  const findings = included.map((work) => ({ work, checklist: assessments.get(work.id)!.checklist }));
+  const incomplete = findings.some((r) => r.checklist.some((c) => !c.present));
+  const blocked = findings.some((r) => r.checklist.some((c) => c.blocking && !c.present));
   async function exportZip() {
     setBusy(true);
     setError('');
     try {
-      const res = await api('/' + project.id + '/report', json({ phase, pack, selected }));
+      const res = await api('/' + project.id + '/report', json({ pack, selected }));
       const url = URL.createObjectURL(await res.blob()),
         a = document.createElement('a');
       a.href = url;
@@ -227,7 +239,6 @@ function Export({ project, phase, close }: { project: SavedProject; phase: strin
               setSelected([]);
             }}
           >
-            <option value="">Все работы фазы</option>
             {packs.map((r) => (
               <option key={r.id} value={r.id}>
                 {recordTitle(r)}
@@ -253,10 +264,21 @@ function Export({ project, phase, close }: { project: SavedProject; phase: strin
             </label>
           ))}
         </div>
+        {findings.length > 0 && (
+          <details className={s.ruleSection} open={blocked}>
+            <summary>Готовность этапов</summary>
+            {findings.map((r) => (
+              <section key={r.work.id}>
+                <h4>{recordTitle(r.work)}</h4>
+                <WorkChecklist items={r.checklist} />
+              </section>
+            ))}
+          </details>
+        )}
         {reviews.length > 0 && (
           <section className={s.ruleSection}>
             <h3>Проверка нормативов</h3>
-            {reviews.map(({ work, checks, changes, conflicts }) => (
+            {reviews.map(({ work, changes }) => (
               <div className={s.rule} key={work.id}>
                 <strong>{recordTitle(work)}</strong>
                 <ul>
@@ -271,15 +293,7 @@ function Export({ project, phase, close }: { project: SavedProject; phase: strin
                       ))}
                     </li>
                   ))}
-                  {checks.map((check, i) => (
-                    <li key={i}>
-                      {check.document} · {check.basis} · <strong>{check.status}</strong>
-                    </li>
-                  ))}
                 </ul>
-                {conflicts.length > 0 && (
-                  <p role="alert">Укажите одну замену для поля «{conflicts.join(', ')}».</p>
-                )}
               </div>
             ))}
           </section>
@@ -295,7 +309,7 @@ function Export({ project, phase, close }: { project: SavedProject; phase: strin
         <button className={s.secondary} disabled={busy} onClick={close}>
           Отмена
         </button>
-        <button className={s.primary} disabled={busy || !count || hasConflict} onClick={() => void exportZip()}>
+        <button className={s.primary} disabled={busy || !count || blocked} onClick={() => void exportZip()}>
           <Download size={16} />
           {busy ? 'Сборка…' : incomplete ? 'Скачать ZIP с замечаниями' : 'Скачать ZIP'} · {count}
         </button>
@@ -321,21 +335,18 @@ function Workspace({
   switchProject: (id: string) => void;
 }) {
   const [project, setProject] = useState(initial),
-    [phase, setPhase] = useState(initial.rows.find((r) => r.kind === 'phase')?.id || ''),
     [tab, setTab] = useState<Kind>(() => {
       const section = new URLSearchParams(location.search).get('section');
-      return sections.find((kind) => kind === section) || 'work';
+      return sections.find((kind) => kind === section) || 'pack';
     });
   const [edit, setEdit] = useState<Entry | 'settings' | null>(null),
-    [exporting, setExporting] = useState(false);
-  const rows = project.rows.filter(
-    (r) => r.kind === tab && (!['work', 'pack'].includes(tab) || r.links.phase?.includes(phase)),
-  );
+    [exporting, setExporting] = useState<string>();
+  const rows = project.rows.filter((r) => r.kind === tab);
   const columns = useMemo(() => entryColumns(project, tab), [project, tab]);
   const scope = 'construction.' + project.id + '.' + tab;
   const incomingTemplates = project.rows.filter((r) => r.kind === 'template' && r.v.form === 'incoming');
   const [avkTemplate, setAvkTemplate] = useState('');
-  const phases = project.rows.filter((r) => r.kind === 'phase'),
+  const packs = project.rows.filter((r) => r.kind === 'pack'),
     existing = edit && edit !== 'settings' && project.rows.some((r) => r.id === edit.id);
   async function persist(next: SavedProject, file?: File, id?: string) {
     const error = validateProject(next);
@@ -352,19 +363,11 @@ function Workspace({
       init = { ...json({ project: { v: next.v, rows: next.rows }, version: project.version }), method: 'PUT' };
     const saved: SavedProject = await (await api('/' + project.id, init)).json();
     setProject(saved);
-    if (!saved.rows.some((r) => r.id === phase)) setPhase(saved.rows.find((r) => r.kind === 'phase')?.id || '');
     setEdit(null);
   }
   function add() {
     const r = entry(tab, { name: '' });
-    if (tab === 'work' || tab === 'pack') r.links.phase = phase ? [phase] : [];
-    if (tab === 'work') {
-      r.links.template = project.rows
-        .filter((x) => x.kind === 'template')
-        .slice(0, 1)
-        .map((t) => t.id);
-      r.v.copies = '2';
-    }
+    if (tab === 'work' && packs.length === 1) r.links.pack = [packs[0].id];
     if (tab === 'template') r.v.form = 'hidden';
     if (tab === 'person') r.v.role = 'СК Заказчика';
     setEdit(r);
@@ -372,7 +375,11 @@ function Workspace({
   const rowDetails = (r: Entry) => {
     switch (r.kind) {
       case 'work':
-        return [project.rows.find((t) => t.id === r.links.template?.[0])?.v.name, numberOf(project, r), r.v.date]
+        return [
+          project.rows.find((t) => t.id === r.links.template?.[0])?.v.name,
+          r.v.number && numberOf(project, r),
+          r.v.date,
+        ]
           .filter(Boolean)
           .join(' · ');
       case 'template':
@@ -381,8 +388,6 @@ function Workspace({
         return [r.v.role, r.v.position, r.v.company].filter(Boolean).join(' · ');
       case 'standard':
         return r.v.description;
-      case 'phase':
-        return 'Актов · ' + project.rows.filter((w) => w.kind === 'work' && w.links.phase[0] === r.id).length;
       case 'pack':
         return 'Актов · ' + project.rows.filter((w) => w.kind === 'work' && w.links.pack?.includes(r.id)).length;
       default:
@@ -413,25 +418,11 @@ function Workspace({
         breadcrumb={
           <>
             <Home size={15} />
-            <button onClick={back}>Проекты</button> / <span title={project.v.name}>{project.v.name}</span> /{' '}
-            <select
-              className={s.phaseSelect}
-              aria-label="Текущая фаза"
-              value={phase}
-              onChange={(e) => {
-                setPhase(e.target.value);
-              }}
-            >
-              {phases.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.v.name}
-                </option>
-              ))}
-            </select>
+            <button onClick={back}>Проекты</button> / <span title={project.v.name}>{project.v.name}</span>
           </>
         }
         action={
-          <button className={s.secondary} disabled={!phase} onClick={() => setExporting(true)}>
+          <button className={s.secondary} disabled={!packs.length} onClick={() => setExporting(packs[0]?.id)}>
             <Download size={15} /> Выгрузить комплект
           </button>
         }
@@ -459,9 +450,15 @@ function Workspace({
               {sections.map((k) => {
                 const Icon = icons[k];
                 return (
-                  <Tabs.Trigger key={k} value={k} data-section={k} title={labels[k]} aria-label={labels[k]}>
+                  <Tabs.Trigger
+                    key={k}
+                    value={k}
+                    data-section={k}
+                    title={k === 'pack' ? 'Обзор комплектов' : labels[k]}
+                    aria-label={k === 'pack' ? 'Обзор комплектов' : labels[k]}
+                  >
                     <Icon size={16} />
-                    <span>{labels[k]}</span>
+                    <span>{k === 'pack' ? 'Обзор комплектов' : labels[k]}</span>
                   </Tabs.Trigger>
                 );
               })}
@@ -491,11 +488,11 @@ function Workspace({
         <Tabs.Content key={tab} value={tab} className={s.panel}>
           <div className={s.rowHeading}>
             <h2>
-              {labels[tab]} <span>{rows.length}</span>
+              {tab === 'pack' ? 'Обзор комплектов' : labels[tab]} <span>{rows.length}</span>
             </h2>
             <button className={s.primary} onClick={add}>
               <Plus size={16} />
-              {tab === 'standard' ? 'Норматив' : 'Добавить'}
+              {tab === 'pack' ? 'Новый комплект' : tab === 'standard' ? 'Норматив' : 'Добавить'}
             </button>
           </div>
           {tab === 'material' && rows.length > 0 && incomingTemplates.length > 0 && (
@@ -530,44 +527,55 @@ function Workspace({
               </a>
             </div>
           )}
-          <RecordList
-            key={scope + (['work', 'pack'].includes(tab) ? phase : '')}
-            scope={scope}
-            rows={rows}
-            columns={columns}
-            placeholder={tab === 'standard' ? 'Поиск по нормативам' : 'Поиск по записям'}
-            quickFilter={tab === 'standard' ? { key: 'rules', value: 'С правилами' } : undefined}
-            pageSize={tab === 'standard' ? 10 : 25}
-            empty={
-              <>
-                <p>Пока нет записей</p>
-                <button onClick={add}>Добавить первую запись</button>
-              </>
-            }
-          >
-            {(groups) =>
-              tab === 'standard' ? (
-                <StandardsBrowser groups={groups} edit={setEdit} />
-              ) : (
-                groups.map((group) => (
-                  <section key={group.key}>
-                    <GroupTitle group={group} />
-                    <div className={s.records}>
-                      {group.rows.map((r) => (
-                        <button className={s.record} key={r.id} onClick={() => setEdit(r)}>
-                          <span>
-                            <strong>{r.v.name}</strong>
-                            <small>{rowDetails(r)}</small>
-                          </span>
-                          <ChevronRight size={15} />
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-                ))
-              )
-            }
-          </RecordList>
+          {tab === 'pack' ? (
+            <PackageDashboard
+              project={project}
+              edit={setEdit}
+              download={setExporting}
+              plan={(id, name) =>
+                persist({ ...project, rows: [...project.rows, entry('work', { name }, { pack: [id] })] })
+              }
+            />
+          ) : (
+            <RecordList
+              key={scope}
+              scope={scope}
+              rows={rows}
+              columns={columns}
+              placeholder={tab === 'standard' ? 'Поиск по нормативам' : 'Поиск по записям'}
+              quickFilter={tab === 'standard' ? { key: 'rules', value: 'С правилами' } : undefined}
+              pageSize={tab === 'standard' ? 10 : 25}
+              empty={
+                <>
+                  <p>Пока нет записей</p>
+                  <button onClick={add}>Добавить первую запись</button>
+                </>
+              }
+            >
+              {(groups) =>
+                tab === 'standard' ? (
+                  <StandardsBrowser groups={groups} edit={setEdit} />
+                ) : (
+                  groups.map((group) => (
+                    <section key={group.key}>
+                      <GroupTitle group={group} />
+                      <div className={s.records}>
+                        {group.rows.map((r) => (
+                          <button className={s.record} key={r.id} onClick={() => setEdit(r)}>
+                            <span>
+                              <strong>{r.v.name || 'Шаг без названия'}</strong>
+                              <small>{rowDetails(r)}</small>
+                            </span>
+                            <ChevronRight size={15} />
+                          </button>
+                        ))}
+                      </div>
+                    </section>
+                  ))
+                )
+              }
+            </RecordList>
+          )}
         </Tabs.Content>
         {edit && (
           <Editor
@@ -595,7 +603,7 @@ function Workspace({
             }}
           />
         )}
-        {exporting && <Export project={project} phase={phase} close={() => setExporting(false)} />}
+        {exporting && <Export project={project} initialPack={exporting} close={() => setExporting(undefined)} />}
       </AppShell>
     </Tabs.Root>
   );
@@ -738,7 +746,7 @@ export function Projects({ shell, notice }: { shell: ShellProps; notice: ReactNo
                         <h2 title={p.name}>{p.name}</h2>
                         <div>
                           <span>
-                            Фазы · {p.phases}　 Акты · {p.works}
+                            Комплекты · {p.packs}　 Акты · {p.works}
                           </span>
                           <ArrowRight size={17} />
                         </div>
@@ -754,7 +762,7 @@ export function Projects({ shell, notice }: { shell: ShellProps; notice: ReactNo
             <div className={s.empty}>
               <Building2 size={35} />
               <h3>Первый строительный проект</h3>
-              <p>Начните с названия объекта и первой фазы или перенесите данные из книги автогенератора.</p>
+              <p>Начните с названия объекта и первого комплекта или перенесите данные из книги автогенератора.</p>
             </div>
           )
         )}
