@@ -557,27 +557,27 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   assert.equal((await store.documentFields(jobId)).size,0);
 });
 
-test('construction packages persist originals atomically, isolate phases and include dependent hidden works', async () => {
+test('construction packages persist originals atomically, isolate packages and include dependent hidden works', async () => {
   const { entry } = await import('../shared/construction.js');
   const JSZip = (await import('jszip')).default;
   const app = createApp(config);
   const api = request.agent(app);
   await api.get('/api/construction').expect(401);
   api.set('Cookie', cookie());
-  const created = await api.post('/api/construction').send({ name: 'Тестовый объект', phase: 'Фундамент' }).expect(201);
+  const created = await api.post('/api/construction').send({ name: 'Тестовый объект', pack: 'Фундамент' }).expect(201);
   const project = created.body as import('../shared/construction.js').SavedProject;
-  const phase = project.rows.find(r => r.kind === 'phase')!;
+  const pack = project.rows.find(r => r.kind === 'pack')!;
   const template = (form: string) => project.rows.find(r => r.kind === 'template' && r.v.form === form)!;
-  const otherPhase = entry('phase', { name: 'Кровля' });
+  const otherPack = entry('pack', { name: 'Кровля' });
   const materials = Array.from({ length: 6 }, (_, i) => entry('material', { name: 'Материал ' + i, incoming: 'ВК-1', number: 'С-' + i }));
   const hidden = entry('work', { name: 'Подготовка основания', number: '01', date: '2026-01-03' }, {
-    phase: [phase.id], template: [template('hidden').id], materials: materials.map(m => m.id),
+    pack: [pack.id], template: [template('hidden').id], materials: materials.map(m => m.id),
   });
   const structure = entry('work', { name: 'Приёмка плиты', number: '02', date: '2026-01-05' }, {
-    phase: [phase.id], template: [template('structure').id], children: [hidden.id],
+    pack: [pack.id], template: [template('structure').id], children: [hidden.id],
   });
-  project.rows.push(otherPhase, ...materials, hidden, structure,
-    entry('work', { name: 'Кровельные работы', number: '03', date: '2026-01-07' }, { phase: [otherPhase.id], template: [template('hidden').id] }));
+  project.rows.push(otherPack, ...materials, hidden, structure,
+    entry('work', { name: 'Кровельные работы', number: '03', date: '2026-01-07' }, { pack: [otherPack.id], template: [template('hidden').id] }));
   const original = await image();
   const route = '/api/construction/' + project.id;
   const saved = await api.put(route).field('project', JSON.stringify(project)).field('version', '1')
@@ -591,7 +591,7 @@ test('construction packages persist originals atomically, isolate phases and inc
     const chunks: Buffer[] = [];
     res.on('data', chunk => chunks.push(Buffer.from(chunk))).on('end', () => done(null, Buffer.concat(chunks)));
   };
-  const response = await api.post(route + '/report').send({ phase: phase.id, selected: [structure.id] })
+  const response = await api.post(route + '/report').send({ pack: pack.id, selected: [structure.id] })
     .buffer(true).parse(readBinary).expect(201);
   const zip = await JSZip.loadAsync(response.body);
   const paths = Object.keys(zip.files);
@@ -607,7 +607,7 @@ test('construction packages persist originals atomically, isolate phases and inc
   await book.xlsx.load(await zip.file(paths.find(p => p.startsWith('Реестр ') && p.endsWith('.xlsx'))!)!.async('arraybuffer'));
   assert.equal(book.getWorksheet('ЖВЗП')!.rowCount, 7);
   assert.ok(book.getWorksheet('По типам')!.rowCount < book.getWorksheet('По актам')!.rowCount);
-  await api.post(route + '/report').send({ phase: otherPhase.id, selected: [structure.id] }).expect(400);
+  await api.post(route + '/report').send({ pack: otherPack.id, selected: [structure.id] }).expect(400);
   const incoming = await api.get(route + '/incoming/' + template('incoming').id).buffer(true).parse(readBinary).expect(200);
   const avk = await JSZip.loadAsync(incoming.body);
   const avkDoc = await JSZip.loadAsync(await avk.file(Object.keys(avk.files).find(p => p.endsWith('.docx'))!)!.async('nodebuffer'));
@@ -627,10 +627,23 @@ test('imports workbook references by role and name, including multiple hidden ac
   for (let i = 1; i <= 3; i++) works.getRow(i+3).values = [i,'А-'+i,i===3?'АООК':'АОСР','','Работа '+i];
   works.getCell('AA4').value = '[7]_Второй Б. Б.';
   works.getCell('R6').value = '1, 2';
-  const { project, warnings } = await importBook(Buffer.from(await book.xlsx.writeBuffer()), 'Участок');
-  assert.deepEqual(warnings, []);
+  works.getCell('B7').value = 'План-4'; // Reserved number, work and form still unknown.
+  works.getCell('P9').value = 'Последующие работы';
+  works.getCell('A8').value = 5;
+  works.getCell('C8').value = 'АОСР';
+  works.getCell('V8').value = {formula:'1+1', result:2}; // Pre-filled template row.
+  const buffer=Buffer.from(await book.xlsx.writeBuffer());
+  const { project, warnings } = await importBook(buffer, 'Участок');
+  assert.equal(warnings.length,1);
+  assert.match(warnings[0],/только с дополнительными сведениями: 1/);
+  const inclusive=await importBook(buffer, 'Участок',true);
+  assert.equal(inclusive.project.rows.filter(r=>r.kind==='work').length,5);
+  assert.equal(inclusive.project.rows.at(-1)?.v.next,'Последующие работы');
   assert.equal(validateProject(project), undefined);
   const acts = project.rows.filter(r=>r.kind==='work');
+  assert.equal(acts.length,4);
+  assert.equal(acts[3].v.number,'План-4');
+  assert.deepEqual(acts[3].links.template,[]);
   assert.deepEqual(acts[2].links.children, acts.slice(0,2).map(r=>r.id));
   assert.equal(acts[0].links.signer4[0],project.rows.find(r=>r.v.name==='Второй Б. Б.')?.id);
 });

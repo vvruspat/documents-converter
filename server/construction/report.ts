@@ -1,10 +1,10 @@
+import { assessWork } from '../../shared/readiness.js';
 import { evaluateStandardRules, withHiddenWorks } from '../../shared/standard-rules.js';
 import { baseForm } from './forms.js';
 import { BadRequestException } from '@nestjs/common';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import {
-  canSign,
   workTitle,
   numberOf,
   type Project,
@@ -151,21 +151,17 @@ function verificationJournal(book: ExcelJS.Workbook, materials: Entry[]) {
 }
 export async function report(
   p: SavedProject,
-  phase: string,
   pack: string,
   selected: string[],
   asset: (id: string) => Promise<Asset>,
 ) {
   const byId = new Map(p.rows.map((r) => [r.id, r]));
-  if (byId.get(phase)?.kind !== 'phase') throw new BadRequestException('Выберите фазу.');
-  if (pack && (byId.get(pack)?.kind !== 'pack' || byId.get(pack)?.links.phase[0] !== phase))
-    throw new BadRequestException('Выберите комплект этой фазы.');
+  if (byId.get(pack)?.kind !== 'pack') throw new BadRequestException('Выберите комплект.');
   const linked = (r: Entry, k: string) => (r.links[k] || []).map((id) => byId.get(id)!);
   const selectedWorks = p.rows.filter(
     (r) =>
       r.kind === 'work' &&
-      r.links.phase[0] === phase &&
-      (!pack || r.links.pack?.includes(pack)) &&
+      r.links.pack?.includes(pack) &&
       (!selected.length || selected.includes(r.id)),
   );
   if (!selectedWorks.length || selected.some((id) => !selectedWorks.some((w) => w.id === id)))
@@ -199,15 +195,14 @@ export async function report(
   const avkTemplate = p.rows.find((r) => r.kind === 'template' && r.v.form === 'incoming');
   const org = (key: string) => join(p.v[key], p.v[key + 'Details']);
   for (const [index, w] of works.entries()) {
+    const {issues}=assessWork(w,byId);
+    if(issues.length) throw new BadRequestException((w.v.name || 'Шаг без названия')+' · '+issues.join('. '));
     const t = linked(w, 'template')[0],
       form = t.v.form,
       v = w.v,
       num = numberOf(p, w),
       name = workTitle(v),
       children = linked(w, 'children');
-    if (!v.number?.trim() || !v.date)
-      throw new BadRequestException('Заполните номер и дату акта «' + v.name + '».');
-    if (t.v.needsFile === 'да' && !t.file) throw new BadRequestException('Загрузите форму «' + t.v.name + '».');
     const aggregate = (k: string) => unique([w, ...children].flatMap((r) => linked(r, k)));
     const materials = aggregate('materials'),
       schemes = aggregate('schemes'),
@@ -290,9 +285,6 @@ export async function report(
     const avks: string[] = [];
     const props: Record<string, string> = {};
     const people = Array.from({ length: 8 }, (_, i) => linked(w, 'signer' + i)[0]);
-    const expired = people.find((person) => person && !canSign(person, v.date));
-    if (expired)
-      throw new BadRequestException('Проверьте срок полномочий ' + expired.v.name + ' на дату акта ' + num + '.');
     signerValues(p, people, props);
     if (p.v.includeAvk === 'да' && form !== 'incoming') {
       for (const number of unique(materials.map((r) => r.v.incoming).filter(Boolean))) {
@@ -400,11 +392,7 @@ export async function report(
     );
     if (form === 'incoming')
       Object.assign(props, incomingValues(p, v.number, localDate(v.date), materials, props));
-    const { changes, checks, conflicts } = evaluateStandardRules(w, byId);
-    if (conflicts.length)
-      throw new BadRequestException(
-        'Акт ' + num + ' · разные замены поля «' + conflicts.join(', ') + '». Проверьте правила нормативов.',
-      );
+    const { changes, checks } = evaluateStandardRules(w, byId);
     for (const [key, change] of changes) {
       props[key] = [
         ...new Set([change.replacements.values().next().value ?? props[key], ...change.additions].filter(Boolean)),
@@ -420,7 +408,7 @@ export async function report(
   const head = ['№', 'Вид', 'Наименование', 'Номер', 'Дата', 'Организация', 'Листов', 'Файл в комплекте', 'Акт'];
   const registerRows = (rs: RegisterRow[]) =>
     rs.map((r, i) => [String(i + 1), r.type, r.name, r.number, r.date, r.org, r.pages, r.file, r.act]);
-  const packName = byId.get(pack)?.v;
+  const packName = byId.get(pack)!.v;
   sheet(
     book,
     'Комплект',
@@ -429,9 +417,8 @@ export async function report(
       ['Проект', p.v.name],
       ['Объект', p.v.object || p.v.name],
       ['Адрес', p.v.address],
-      ['Фаза', byId.get(phase)!.v.name],
-      ['Комплект', packName?.name || 'Все работы фазы'],
-      ['Номер комплекта', packName?.number || ''],
+      ['Комплект', packName.name],
+      ['Номер комплекта', packName.number || ''],
       ['Застройщик', org('customer')],
       ['Генподрядчик', org('builder')],
       ['Проектировщик', org('designer')],
@@ -476,7 +463,7 @@ export async function report(
       [22, 55, 40, 48, 55],
     );
   verificationJournal(book, [...usedMaterials]);
-  const filename = safe(join(p.v.name, byId.get(phase)!.v.name, packName?.name, packName?.number));
+  const filename = safe(join(p.v.name, packName.name, packName.number));
   add('Реестр ' + filename + '.xlsx', await xlsx(book));
   return {
     name: filename + '.zip',

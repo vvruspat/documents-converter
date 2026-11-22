@@ -1,3 +1,4 @@
+import { readProject } from './legacy.js';
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
@@ -28,7 +29,11 @@ export class ProjectStore {
     await this.ready();
     return (
       await this.pool.query(`SELECT id,data->'v'->>'name' name,
-      jsonb_array_length(jsonb_path_query_array(data,'$.rows[*] ? (@.kind == "phase")')) phases,
+      (SELECT count(*)::int FROM jsonb_array_elements(data->'rows') r WHERE r->>'kind'='pack'
+        OR (r->>'kind'='phase' AND (
+          NOT EXISTS (SELECT 1 FROM jsonb_array_elements(data->'rows') p WHERE p->>'kind'='pack' AND p->'links'->'phase'->>0=r->>'id')
+          OR EXISTS (SELECT 1 FROM jsonb_array_elements(data->'rows') w WHERE w->>'kind'='work' AND w->'links'->'phase'->>0=r->>'id' AND coalesce(jsonb_array_length(w->'links'->'pack'),0)=0)
+        ))) packs,
       jsonb_array_length(jsonb_path_query_array(data,'$.rows[*] ? (@.kind == "work")')) works
       FROM ${this.ns}.construction_projects ORDER BY name,id`)
     ).rows;
@@ -39,7 +44,7 @@ export class ProjectStore {
       rows: [row],
     } = await this.pool.query(`SELECT version,data FROM ${this.ns}.construction_projects WHERE id=$1`, [id]);
     if (!row) throw new NotFoundException('Проект не найден.');
-    return { ...row.data, id, version: row.version };
+    return { ...readProject(row.data), id, version: row.version };
   }
   validate(input: unknown): Project {
     const parsed = projectSchema.safeParse(input);

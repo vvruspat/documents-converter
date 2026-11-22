@@ -63,7 +63,7 @@ const fileKinds = ['template', 'material', 'scheme', 'protocol'];
 export function recordTitle(r: Entry) {
   return [r.v.number, r.v.name, r.kind === 'standard' ? r.v.description : '', r.kind === 'person' ? r.v.role : '', r.kind === 'material' ? r.v.docType : '']
     .filter(Boolean)
-    .join(' · ');
+    .join(' · ') || 'Шаг без названия';
 }
 function Links({
   field,
@@ -170,7 +170,6 @@ export function Editor({ project, row, title, close, save, remove }: Props) {
   const changeLink = (k: string, ids: string[]) =>
     setLinks((prev) => ({
       ...prev,
-      ...(k === 'phase' ? { pack: [], children: [] } : {}),
       ...(k === 'template' && project.rows.find((r) => r.id === ids[0])?.v.form !== 'structure'
         ? { children: [] }
         : {}),
@@ -250,8 +249,6 @@ export function Editor({ project, row, title, close, save, remove }: Props) {
                 return null;
               if (field.type === 'link') {
                 let options = project.rows.filter((r) => r.kind === field.target);
-                if (field.key === 'pack' || field.key === 'children')
-                  options = options.filter((r) => r.links.phase?.[0] === links.phase?.[0]);
                 if (field.key === 'children')
                   options = options.filter(
                     (r) => project.rows.find((t) => t.id === r.links.template?.[0])?.v.form === 'hidden',

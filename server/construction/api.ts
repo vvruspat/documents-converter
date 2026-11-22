@@ -53,19 +53,20 @@ class ProjectsController {
     return this.store.list();
   }
   @Post() async create(@Body() body: Record<string, unknown>) {
-    return this.store.create(await newProject(inputText(body.name), inputText(body.phase) || 'Основная фаза'));
+    return this.store.create(await newProject(inputText(body.name), inputText(body.pack || body.phase) || 'Основной комплект'));
   }
   @Post('import')
   @UseInterceptors(
     FileFieldsInterceptor(
       ['file', ...Object.keys(formTypes)].map((name) => ({ name, maxCount: 1 })),
-      { limits: { fileSize: 24 * 1024 * 1024, files: 4, fields: 1 } },
+      { limits: { fileSize: 24 * 1024 * 1024, files: 4, fields: 2 } },
     ),
   )
-  async import(@UploadedFiles() files: Record<string, Express.Multer.File[]>, @Body('phase') phase: string) {
+  async import(@UploadedFiles() files: Record<string, Express.Multer.File[]>, @Body() body: Record<string, unknown>) {
     const { project, warnings } = await importBook(
       fileRequired(files?.file?.[0]).buffer,
-      inputText(phase) || 'Основная фаза',
+      inputText(body.pack || body.phase) || 'Основной комплект',
+      body.includeNotes === 'true',
     );
     const assets = [];
     for (const [form, name] of Object.entries(formTypes)) {
@@ -146,15 +147,14 @@ class ProjectsController {
   async export(@Param('id', ParseUUIDPipe) id: string, @Body() body: unknown, @Res() res: express.Response) {
     const params = z
       .object({
-        phase: z.uuid(),
-        pack: z.union([z.uuid(), z.literal('')]).default(''),
+        pack: z.uuid(),
         selected: z.array(z.uuid()).max(5000).default([]),
       })
       .safeParse(body);
-    if (!params.success) throw new BadRequestException('Выберите фазу и состав комплекта.');
+    if (!params.success) throw new BadRequestException('Выберите комплект и его состав.');
     const p = await this.store.get(id),
-      { phase, pack, selected } = params.data;
-    const archive = await report(p, phase, pack, selected, (entry) => this.store.asset(id, entry, p.version));
+      { pack, selected } = params.data;
+    const archive = await report(p, pack, selected, (entry) => this.store.asset(id, entry, p.version));
     download(res, archive.name, archive.data);
   }
 }
