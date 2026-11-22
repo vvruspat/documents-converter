@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { ChevronDown, Download, FileArchive, Pencil, Plus } from 'lucide-react';
+import { WorkChecklist } from './WorkChecklist';
 import { packagePlan } from '../../shared/readiness';
 import type { Entry, SavedProject } from '../../shared/construction';
 import { RecordList, GroupTitle } from '../lists/RecordList';
@@ -19,7 +20,11 @@ const stepColumns: Column<Pack['steps'][number]>[] = [
   { key: 'name', label: 'Работа', value: (s) => s.work.v.name || 'Шаг без названия' },
   { key: 'number', label: 'Номер акта', value: (s) => s.work.v.number },
   { key: 'date', label: 'Дата акта', value: (s) => s.work.v.date },
-  { key: 'issues', label: 'Что заполнить', value: (s) => [...s.issues, ...s.warnings] },
+  {
+    key: 'issues',
+    label: 'Что заполнить',
+    value: (s) => s.checklist.filter((c) => !c.present).map((c) => c.label),
+  },
 ];
 function PackageCard({
   item,
@@ -76,27 +81,21 @@ function PackageCard({
                 groups.map((group) => (
                   <section key={group.key}>
                     <GroupTitle group={group} />
-                    {group.rows.map(({ work, status, warnings, issues, dependent, position }) => (
-                      <button key={work.id} className={s.step} onClick={() => edit(work)}>
-                        <span className={s.stepIndex}>{position}</span>
-                        <span>
-                          <strong>{work.v.name || 'Шаг без названия'}</strong>
-                          <small>
-                            {[
-                              dependent ? 'Связанный АОСР' : '',
-                              work.v.number,
-                              work.v.date,
-                              ...issues,
-                              ...warnings,
-                            ]
-                              .filter(Boolean)
-                              .join(' · ')}
-                          </small>
-                        </span>
-                        <span className={s.status} data-status={status}>
-                          {status}
-                        </span>
-                      </button>
+                    {group.rows.map(({ work, status, checklist, dependent, position }) => (
+                      <article key={work.id} className={s.stepCard}>
+                        <button className={s.step} onClick={() => edit(work)}>
+                          <span className={s.stepIndex}>{position}</span>
+                          <span>
+                            <strong>{work.v.name || 'Шаг без названия'}</strong>
+                            {dependent && <small>Связанный АОСР</small>}
+                          </span>
+                          <span className={s.status} data-status={status}>
+                            {status}
+                          </span>
+                          <Pencil size={14} />
+                        </button>
+                        <WorkChecklist items={checklist} />
+                      </article>
                     ))}
                   </section>
                 ))

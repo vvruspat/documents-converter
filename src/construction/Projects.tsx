@@ -1,5 +1,6 @@
 import { PackageDashboard } from './PackageDashboard';
-import { assessWork } from '../../shared/readiness';
+import { WorkChecklist } from './WorkChecklist';
+import { assessWorks } from '../../shared/readiness';
 import { RecordList, GroupTitle } from '../lists/RecordList';
 import { entryColumns, projectColumns } from './listColumns';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -202,10 +203,11 @@ function Export({
   const count = included.length;
   const reviews = included
     .map((work) => ({ work, ...evaluateStandardRules(work, byId) }))
-    .filter((item) => item.checks.length || item.changes.size);
-  const findings = included.map((work) => ({ work, ...assessWork(work, byId) }));
-  const incomplete = findings.some((r) => r.warnings.length);
-  const blocked = findings.some((r) => r.issues.length);
+    .filter((item) => item.changes.size);
+  const assessments = assessWorks(byId);
+  const findings = included.map((work) => ({ work, checklist: assessments.get(work.id)!.checklist }));
+  const incomplete = findings.some((r) => r.checklist.some((c) => !c.present));
+  const blocked = findings.some((r) => r.checklist.some((c) => c.blocking && !c.present));
   async function exportZip() {
     setBusy(true);
     setError('');
@@ -262,22 +264,21 @@ function Export({
             </label>
           ))}
         </div>
-        {findings.some((r) => r.issues.length || r.warnings.length) && (
+        {findings.length > 0 && (
           <details className={s.ruleSection} open={blocked}>
-            <summary>Что осталось заполнить</summary>
-            {findings
-              .filter((r) => r.issues.length || r.warnings.length)
-              .map((r) => (
-                <p key={r.work.id}>
-                  <strong>{recordTitle(r.work)}</strong> · {[...r.issues, ...r.warnings].join(' · ')}
-                </p>
-              ))}
+            <summary>Готовность этапов</summary>
+            {findings.map((r) => (
+              <section key={r.work.id}>
+                <h4>{recordTitle(r.work)}</h4>
+                <WorkChecklist items={r.checklist} />
+              </section>
+            ))}
           </details>
         )}
         {reviews.length > 0 && (
           <section className={s.ruleSection}>
             <h3>Проверка нормативов</h3>
-            {reviews.map(({ work, checks, changes, conflicts }) => (
+            {reviews.map(({ work, changes }) => (
               <div className={s.rule} key={work.id}>
                 <strong>{recordTitle(work)}</strong>
                 <ul>
@@ -292,15 +293,7 @@ function Export({
                       ))}
                     </li>
                   ))}
-                  {checks.map((check, i) => (
-                    <li key={i}>
-                      {check.document} · {check.basis} · <strong>{check.status}</strong>
-                    </li>
-                  ))}
                 </ul>
-                {conflicts.length > 0 && (
-                  <p role="alert">Укажите одну замену для поля «{conflicts.join(', ')}».</p>
-                )}
               </div>
             ))}
           </section>

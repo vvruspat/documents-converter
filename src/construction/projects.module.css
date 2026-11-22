@@ -962,4 +962,65 @@
   }
 }
 
-.importOption { display:flex; gap:8px; align-items:baseline; margin:12px 0; font-size:13px; }
+.importOption {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 12px 0;
+  font-size: 13px;
+}
+.stepCard {
+  border-bottom: 1px solid var(--edge);
+  padding: 3px 0 10px;
+}
+.stepCard .step {
+  border: 0;
+}
+.workChecks {
+  display: grid;
+  gap: 8px;
+  padding: 4px 0;
+}
+.stepCard .workChecks {
+  margin-left: 34px;
+}
+.checkHeading {
+  display: block;
+  font-size: 11px;
+  color: var(--sub);
+  font-weight: 550;
+  margin-bottom: 4px;
+}
+.workChecks ul {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 0;
+}
+.workChecks li {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  color: var(--sub);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.workChecks li svg {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 2px;
+}
+.workChecks li[data-present='true'] {
+  color: var(--fg);
+}
+.workChecks li[data-present='true'] svg {
+  color: light-dark(#167349, #75d7a1);
+  stroke-width: 2.8;
+}
+@media (max-width: 640px) {
+  .stepCard .workChecks {
+    margin-left: 2px;
+  }
+}

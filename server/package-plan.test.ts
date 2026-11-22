@@ -49,7 +49,13 @@ test('package readiness includes dependent acts, unfinished rows and original fi
     end: '2026-01-01',
   });
   Object.assign(draft.links, { template: [tpl.id], signer0: [signer.id], protocols: [doc.id] });
-  assert.deepEqual(overview().steps[1].warnings, ['Без оригинала · Протокол']);
+  assert.deepEqual(
+    overview()
+      .steps[1].checklist.filter((c) => !c.present)
+      .map((c) => c.label),
+    ['Оригинал · Протокол'],
+  );
+  assert.ok(overview().steps[1].checklist.some((c) => c.label === 'Протокол' && c.present));
   doc.file = 'test.pdf';
   assert.equal(overview().status, 'Готово');
 });

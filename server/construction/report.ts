@@ -1,16 +1,10 @@
-import { assessWork } from '../../shared/readiness.js';
+import { workChecklist } from '../../shared/readiness.js';
 import { evaluateStandardRules, withHiddenWorks } from '../../shared/standard-rules.js';
 import { baseForm } from './forms.js';
 import { BadRequestException } from '@nestjs/common';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
-import {
-  workTitle,
-  numberOf,
-  type Project,
-  type Entry,
-  type SavedProject,
-} from '../../shared/construction.js';
+import { workTitle, numberOf, type Project, type Entry, type SavedProject } from '../../shared/construction.js';
 import { renderForm } from './office.js';
 import type { Asset } from './store.js';
 
@@ -159,10 +153,7 @@ export async function report(
   if (byId.get(pack)?.kind !== 'pack') throw new BadRequestException('Выберите комплект.');
   const linked = (r: Entry, k: string) => (r.links[k] || []).map((id) => byId.get(id)!);
   const selectedWorks = p.rows.filter(
-    (r) =>
-      r.kind === 'work' &&
-      r.links.pack?.includes(pack) &&
-      (!selected.length || selected.includes(r.id)),
+    (r) => r.kind === 'work' && r.links.pack?.includes(pack) && (!selected.length || selected.includes(r.id)),
   );
   if (!selectedWorks.length || selected.some((id) => !selectedWorks.some((w) => w.id === id)))
     throw new BadRequestException('В выбранном комплекте нет указанных работ.');
@@ -195,8 +186,11 @@ export async function report(
   const avkTemplate = p.rows.find((r) => r.kind === 'template' && r.v.form === 'incoming');
   const org = (key: string) => join(p.v[key], p.v[key + 'Details']);
   for (const [index, w] of works.entries()) {
-    const {issues}=assessWork(w,byId);
-    if(issues.length) throw new BadRequestException((w.v.name || 'Шаг без названия')+' · '+issues.join('. '));
+    const missing = workChecklist(w, byId).filter((c) => c.blocking && !c.present);
+    if (missing.length)
+      throw new BadRequestException(
+        (w.v.name || 'Шаг без названия') + ' · ' + missing.map((c) => c.detail || c.label).join(', '),
+      );
     const t = linked(w, 'template')[0],
       form = t.v.form,
       v = w.v,
