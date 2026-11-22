@@ -17,7 +17,10 @@ export async function api(url: string, options?: RequestInit) {
   const response = await fetch('/api/construction' + url, options);
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw Error(body.error && !body.message ? body.error : body.message || 'Не удалось выполнить запрос.');
+    const fallback = response.status === 413
+      ? 'Размер загружаемых файлов превышает ограничение сервера.'
+      : 'Сервер не смог выполнить запрос (HTTP ' + response.status + ').';
+    throw Error(body.message || body.error || fallback);
   }
   return response;
 }
