@@ -817,36 +817,23 @@
     scrollbar-gutter: stable;
   }
 }
-.metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin: 16px 0;
+.packTotals {
+  margin: 8px 0;
+  color: var(--sub);
+  font-size: 13px;
 }
-.metrics > div,
+.packTotals strong {
+  color: var(--fg);
+  font-weight: 550;
+}
 .package {
   border: 1px solid var(--edge);
   border-radius: 8px;
   background: var(--surface);
-}
-.metrics > div {
-  padding: 12px 16px;
-  display: grid;
-  gap: 4px;
-  color: var(--sub);
-  font-size: 12px;
-}
-.metrics strong {
-  font-size: 24px;
-  color: var(--fg);
-  font-weight: 570;
-  font-variant-numeric: tabular-nums;
-}
-.package {
+  min-width: 0;
   margin: 6px 0;
 }
-.package summary,
-.step {
+.package summary {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -893,38 +880,6 @@
   border-top: 1px solid var(--edge);
   padding: 6px 12px 10px;
 }
-.step {
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: 0;
-  border-bottom: 1px solid var(--edge);
-  color: var(--fg);
-  padding: 9px 2px;
-}
-.step:hover {
-  background: var(--hover);
-}
-.step > span:nth-child(2) {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.step strong {
-  font-size: 13px;
-  font-weight: 540;
-}
-.step small {
-  display: block;
-  color: var(--sub);
-  line-height: 1.5;
-  margin-top: 2px;
-}
-.stepIndex {
-  color: var(--sub);
-  font-variant-numeric: tabular-nums;
-  min-width: 22px;
-}
 .planForm {
   display: flex;
   gap: 8px;
@@ -940,22 +895,12 @@
   padding: 6px 10px;
 }
 @media (max-width: 640px) {
-  .metrics {
-    gap: 5px;
-  }
-  .metrics > div {
-    padding: 8px;
-  }
-  .package summary,
-  .step {
+  .package summary {
     flex-wrap: wrap;
     gap: 6px;
   }
   .package summary strong {
     min-width: 65%;
-  }
-  .step .status {
-    margin-left: 26px;
   }
   .planForm {
     flex-wrap: wrap;
@@ -969,20 +914,10 @@
   margin: 12px 0;
   font-size: 13px;
 }
-.stepCard {
-  border-bottom: 1px solid var(--edge);
-  padding: 3px 0 10px;
-}
-.stepCard .step {
-  border: 0;
-}
 .workChecks {
   display: grid;
   gap: 8px;
   padding: 4px 0;
-}
-.stepCard .workChecks {
-  margin-left: 34px;
 }
 .checkHeading {
   display: block;
@@ -1018,9 +953,4 @@
 .workChecks li[data-present='true'] svg {
   color: light-dark(#167349, #75d7a1);
   stroke-width: 2.8;
-}
-@media (max-width: 640px) {
-  .stepCard .workChecks {
-    margin-left: 2px;
-  }
 }

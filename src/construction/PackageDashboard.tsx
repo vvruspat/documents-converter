@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { ChevronDown, Download, FileArchive, Pencil, Plus } from 'lucide-react';
-import { WorkChecklist } from './WorkChecklist';
+import { WorkRegister } from './WorkRegister';
 import { packagePlan } from '../../shared/readiness';
 import type { Entry, SavedProject } from '../../shared/construction';
 import { RecordList, GroupTitle } from '../lists/RecordList';
@@ -15,30 +15,21 @@ const columns: Column<Pack>[] = [
   { key: 'works', label: 'Число актов', value: (r) => r.steps.length },
   { key: 'ready', label: 'Готовые акты', value: (r) => r.ready },
 ];
-const stepColumns: Column<Pack['steps'][number]>[] = [
-  { key: 'status', label: 'Готовность', value: (s) => s.status },
-  { key: 'name', label: 'Работа', value: (s) => s.work.v.name || 'Шаг без названия' },
-  { key: 'number', label: 'Номер акта', value: (s) => s.work.v.number },
-  { key: 'date', label: 'Дата акта', value: (s) => s.work.v.date },
-  {
-    key: 'issues',
-    label: 'Что заполнить',
-    value: (s) => s.checklist.filter((c) => !c.present).map((c) => c.label),
-  },
-];
 function PackageCard({
   item,
+  initiallyOpen,
   edit,
   plan,
   download,
 }: {
   item: Pack;
+  initiallyOpen: boolean;
   edit: (r: Entry) => void;
   plan: (id: string, name: string) => Promise<void>;
   download: (id: string) => void;
 }) {
   const { pack, steps, ready, status } = item;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
   const [name, setName] = useState(''),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
@@ -56,7 +47,7 @@ function PackageCard({
     }
   }
   return (
-    <details className={s.package} onToggle={(e) => setOpen(e.currentTarget.open)}>
+    <details open={open} className={s.package} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary>
         <FileArchive size={18} />
         <strong>{[pack.v.number, pack.v.name].filter(Boolean).join(' · ')}</strong>
@@ -70,38 +61,7 @@ function PackageCard({
       </summary>
       {open && (
         <div className={s.planBody}>
-          {steps.length > 0 && (
-            <RecordList
-              scope={'construction.packSteps.' + pack.id}
-              rows={steps}
-              columns={stepColumns}
-              placeholder="Поиск по шагам"
-            >
-              {(groups) =>
-                groups.map((group) => (
-                  <section key={group.key}>
-                    <GroupTitle group={group} />
-                    {group.rows.map(({ work, status, checklist, dependent, position }) => (
-                      <article key={work.id} className={s.stepCard}>
-                        <button className={s.step} onClick={() => edit(work)}>
-                          <span className={s.stepIndex}>{position}</span>
-                          <span>
-                            <strong>{work.v.name || 'Шаг без названия'}</strong>
-                            {dependent && <small>Связанный АОСР</small>}
-                          </span>
-                          <span className={s.status} data-status={status}>
-                            {status}
-                          </span>
-                          <Pencil size={14} />
-                        </button>
-                        <WorkChecklist items={checklist} />
-                      </article>
-                    ))}
-                  </section>
-                ))
-              }
-            </RecordList>
-          )}
+          {steps.length > 0 && <WorkRegister steps={steps} packId={pack.id} edit={edit} />}
           <form
             className={s.planForm}
             onSubmit={(e) => {
@@ -151,18 +111,14 @@ export function PackageDashboard({
   const packs = useMemo(() => packagePlan(project.rows), [project]);
   return (
     <>
-      <div className={s.metrics}>
-        {[
-          ['Всего комплектов', packs.length],
-          ['Готовы к выгрузке', packs.filter((p) => p.status === 'Готово').length],
-          ['Требуют заполнения', packs.filter((p) => p.status !== 'Готово').length],
-        ].map(([label, n]) => (
-          <div key={label}>
-            <span>{label}</span>
-            <strong>{n}</strong>
-          </div>
-        ))}
-      </div>
+      {packs.length > 1 && (
+        <p className={s.packTotals}>
+          Готовых комплектов{' '}
+          <strong>
+            {packs.filter((p) => p.status === 'Готово').length} из {packs.length}
+          </strong>
+        </p>
+      )}
       <RecordList
         scope={'construction.' + project.id + '.pack'}
         rows={packs}
@@ -175,7 +131,14 @@ export function PackageDashboard({
             <section key={group.key}>
               <GroupTitle group={group} />
               {group.rows.map((item) => (
-                <PackageCard key={item.pack.id} item={item} edit={edit} plan={plan} download={download} />
+                <PackageCard
+                  key={item.pack.id}
+                  item={item}
+                  initiallyOpen={packs.length === 1}
+                  edit={edit}
+                  plan={plan}
+                  download={download}
+                />
               ))}
             </section>
           ))

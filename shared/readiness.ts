@@ -7,21 +7,29 @@ export type CheckItem = {
   section: 'work' | 'evidence';
   blocking?: boolean;
   detail?: string;
+  field?: 'name' | 'template' | 'number' | 'date' | 'start' | 'end' | 'signers' | 'templateFile';
+  document?: { key: string; part: 'link' | 'original' };
 };
 export function workChecklist(work: Entry, byId: Map<string, Entry>): CheckItem[] {
   const template = byId.get(work.links.template?.[0]);
   const items: CheckItem[] = [];
-  const field = (label: string, value: string | undefined, blocking = true) => {
-    items.push({ label, present: Boolean(value?.trim()), detail: value, section: 'work', blocking });
+  const field = (
+    key: NonNullable<CheckItem['field']>,
+    label: string,
+    value: string | undefined,
+    blocking = true,
+  ) => {
+    items.push({ field: key, label, present: Boolean(value?.trim()), detail: value, section: 'work', blocking });
   };
-  field('Название работы', work.v.name);
-  field('Шаблон акта', template?.v.name);
-  field('Номер акта', work.v.number);
-  field('Дата акта', work.v.date);
-  if (template?.v.needsFile === 'да') field('Файл шаблона', template.file);
+  field('name', 'Название работы', work.v.name);
+  field('template', 'Шаблон акта', template?.v.name);
+  field('number', 'Номер акта', work.v.number);
+  field('date', 'Дата акта', work.v.date);
+  if (template?.v.needsFile === 'да') field('templateFile', 'Файл шаблона', template.file);
   const children = (work.links.children || []).flatMap((id) => byId.get(id) || []);
   if (template && template.v.form !== 'incoming') {
     field(
+      'start',
       'Начало работ',
       work.v.start ||
         children
@@ -31,6 +39,7 @@ export function workChecklist(work: Entry, byId: Map<string, Entry>): CheckItem[
       false,
     );
     field(
+      'end',
       'Окончание работ',
       work.v.end ||
         children
@@ -44,7 +53,7 @@ export function workChecklist(work: Entry, byId: Map<string, Entry>): CheckItem[
   const signers = Object.entries(work.links)
     .filter(([key]) => /^signer[0-7]$/.test(key))
     .flatMap(([, ids]) => ids.flatMap((id) => byId.get(id) || []));
-  field('Подписанты', signers.map((s) => s.v.name).join(', '), false);
+  field('signers', 'Подписанты', signers.map((s) => s.v.name).join(', '), false);
   for (const signer of signers)
     if (work.v.date && (signer.v.start || signer.v.end))
       items.push({
@@ -84,9 +93,21 @@ export function workChecklist(work: Entry, byId: Map<string, Entry>): CheckItem[
     }
   }
   for (const key of ['materials', 'schemes', 'protocols']) for (const id of work.links[key] || []) addDocument(id);
-  for (const { label, doc, bases } of evidence.values()) {
-    items.push({ section: 'evidence', label, present: !!doc, detail: [...bases].join(', ') });
-    items.push({ section: 'evidence', label: 'Оригинал · ' + label, present: !!doc?.file, detail: doc?.file });
+  for (const [key, { label, doc, bases }] of evidence) {
+    items.push({
+      section: 'evidence',
+      document: { key, part: 'link' },
+      label,
+      present: !!doc,
+      detail: [...bases].join(', '),
+    });
+    items.push({
+      section: 'evidence',
+      document: { key, part: 'original' },
+      label: 'Оригинал · ' + label,
+      present: !!doc?.file,
+      detail: doc?.file,
+    });
   }
   return items;
 }
