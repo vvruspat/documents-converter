@@ -17,3 +17,5 @@
 .model-settings-dialog small,.model-settings-dialog footer span,.reading-model { color:#576b60; font-size:12px; font-weight:400; }
 .reading-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
 @media(max-width:700px){.model-settings-trigger span{display:none}.model-settings-trigger{padding:4px}.app>header{column-gap:12px}.app-settings{gap:2px}.model-settings-dialog input{font-size:16px}}
+
+@media(max-width:700px){.app>header{flex-wrap:wrap;height:auto;min-height:62px;padding-top:10px;gap:4px 12px}.app>header>nav{order:3;width:100%;height:34px;gap:18px;overflow-x:auto}.app>header>nav a{white-space:nowrap}.app>header>.app-settings{margin-left:auto}}

@@ -1,0 +1,325 @@
+import { useState, type ReactNode } from 'react';
+import * as Dialog from '@radix-ui/react-dialog';
+import { Download, X, ScanText, Trash2 } from 'lucide-react';
+import {
+  canSign,
+  fields,
+  roles,
+  projectFields,
+  formTypes,
+  type Entry,
+  type Field,
+  type SavedProject,
+} from '../../shared/construction';
+import s from './projects.module.css';
+
+export async function api(url: string, options?: RequestInit) {
+  const response = await fetch('/api/construction' + url, options);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw Error(body.error && !body.message ? body.error : body.message || 'Не удалось выполнить запрос.');
+  }
+  return response;
+}
+export function Modal({
+  title,
+  close,
+  children,
+  busy = false,
+}: {
+  title: string;
+  close: () => void;
+  children: ReactNode;
+  busy?: boolean;
+}) {
+  return (
+    <Dialog.Root
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy) close();
+      }}
+    >
+      <Dialog.Portal>
+        <Dialog.Overlay className={s.overlay} />
+        <Dialog.Content className={s.dialog} aria-describedby={undefined}>
+          <div className={s.modalHeading}>
+            <Dialog.Title>{title}</Dialog.Title>
+            <Dialog.Close disabled={busy} className={s.icon} aria-label="Закрыть">
+              <X size={19} />
+            </Dialog.Close>
+          </div>
+          {children}
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+const fileKinds = ['template', 'material', 'scheme', 'protocol'];
+export function recordTitle(r: Entry) {
+  return [r.v.number, r.v.name, r.kind === 'person' ? r.v.role : '', r.kind === 'material' ? r.v.docType : '']
+    .filter(Boolean)
+    .join(' · ');
+}
+function Links({
+  field,
+  options,
+  ids,
+  onChange,
+}: {
+  field: Field;
+  options: Entry[];
+  ids: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  const [search, setSearch] = useState('');
+  if (!field.many)
+    return (
+      <label className={s.field}>
+        {field.label}
+        <select
+          required={field.required}
+          value={ids[0] || ''}
+          onChange={(e) => onChange(e.target.value ? [e.target.value] : [])}
+        >
+          <option value="">Выберите…</option>
+          {options.map((r) => (
+            <option key={r.id} value={r.id}>
+              {recordTitle(r)}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  const visible = options.filter((r) => recordTitle(r).toLowerCase().includes(search.toLowerCase()));
+  return (
+    <details className={s.linkField}>
+      <summary>
+        {field.label} <span>{ids.length}</span>
+      </summary>
+      <input
+        aria-label={'Поиск · ' + field.label}
+        placeholder="Поиск по названию или номеру"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+      <div className={s.checks}>
+        {visible.map((r) => (
+          <label key={r.id}>
+            <input
+              type="checkbox"
+              checked={ids.includes(r.id)}
+              onChange={(e) => onChange(e.target.checked ? [...ids, r.id] : ids.filter((id) => id !== r.id))}
+            />
+            {recordTitle(r)}
+          </label>
+        ))}
+        {!visible.length && <small>Нет подходящих записей</small>}
+      </div>
+    </details>
+  );
+}
+type Props = {
+  project: SavedProject;
+  row?: Entry;
+  title: string;
+  close: () => void;
+  save: (v: Entry['v'], links: Entry['links'], file?: File, detach?: boolean) => Promise<void>;
+  remove?: () => Promise<void>;
+};
+export function Editor({ project, row, title, close, save, remove }: Props) {
+  const [v, setV] = useState({ ...(row?.v || project.v) }),
+    [links, setLinks] = useState<Entry['links']>(row?.links || {}),
+    [file, setFile] = useState<File>(),
+    [detach, setDetach] = useState(false);
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState(''),
+    [parseNote, setParseNote] = useState(''),
+    [source, setSource] = useState(''),
+    [confirm, setConfirm] = useState(false);
+  const spec = row ? fields[row.kind] : projectFields;
+  const put = (k: string, value: string) => setV((prior) => ({ ...prior, [k]: value }));
+  async function run(action: () => Promise<void>) {
+    setBusy(true);
+    setError('');
+    try {
+      await action();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function parse() {
+    if (!file) return;
+    const data = new FormData();
+    data.append('file', file);
+    const parsed = await (await api('/parse-certificate', { method: 'POST', body: data })).json();
+    setV((prev) => ({
+      ...prev,
+      ...Object.fromEntries(Object.entries(parsed.values as Record<string, string>).filter(([, val]) => val)),
+    }));
+    setParseNote(parsed.warning || 'Проверьте распознанные поля перед сохранением.');
+    setSource(parsed.text);
+  }
+  const changeLink = (k: string, ids: string[]) =>
+    setLinks((prev) => ({
+      ...prev,
+      ...(k === 'phase' ? { pack: [], children: [] } : {}),
+      ...(k === 'template' && project.rows.find((r) => r.id === ids[0])?.v.form !== 'structure'
+        ? { children: [] }
+        : {}),
+      [k]: ids,
+    }));
+  const form = project.rows.find((r) => r.id === links.template?.[0])?.v.form;
+  return (
+    <Modal title={title} close={close} busy={busy}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void run(() => save(v, links, file, detach));
+        }}
+      >
+        <div className={s.formBody}>
+          {row && fileKinds.includes(row.kind) && (
+            <div className={s.fileBox}>
+              <label className={s.field}>
+                {row.kind === 'template' ? 'Файл шаблона Word' : 'Оригинал документа'}
+                <input
+                  type="file"
+                  accept={row.kind === 'template' ? '.docx' : undefined}
+                  onChange={(e) => {
+                    setFile(e.target.files?.[0]);
+                    setDetach(false);
+                    setParseNote('');
+                    setSource('');
+                  }}
+                />
+              </label>
+              {project.rows.some((r) => r.id === row.id) && (row.file || row.kind === 'template') && !detach && (
+                <div className={s.inline}>
+                  <a href={'/api/construction/' + project.id + '/file/' + row.id} download>
+                    <Download size={14} /> {row.file || 'Скачать базовую форму DOCX'}
+                  </a>
+                  {row.file && (
+                    <button
+                      type="button"
+                      className={s.text}
+                      onClick={() => {
+                        setFile(undefined);
+                        setDetach(true);
+                      }}
+                    >
+                      Убрать файл
+                    </button>
+                  )}
+                </div>
+              )}
+              {row.kind === 'template' && (
+                <small>
+                  Для своей формы отредактируйте базовую форму в Word и сохраните именованные закладки.
+                </small>
+              )}
+              {row.kind === 'material' && file && (
+                <button type="button" className={s.secondary} disabled={busy} onClick={() => void run(parse)}>
+                  <ScanText size={16} /> Распознать сертификат
+                </button>
+              )}
+              {parseNote && <small role="status">{parseNote}</small>}
+              {source && (
+                <details>
+                  <summary>Распознанный текст</summary>
+                  <pre>{source}</pre>
+                </details>
+              )}
+            </div>
+          )}
+          <div className={s.formGrid}>
+            {spec.map((field) => {
+              if (
+                row?.kind === 'work' &&
+                ['children', 'use', 'load', 'loadTerms'].includes(field.key) &&
+                form !== 'structure'
+              )
+                return null;
+              if (field.type === 'link') {
+                let options = project.rows.filter((r) => r.kind === field.target);
+                if (field.key === 'pack' || field.key === 'children')
+                  options = options.filter((r) => r.links.phase?.[0] === links.phase?.[0]);
+                if (field.key === 'children')
+                  options = options.filter(
+                    (r) => project.rows.find((t) => t.id === r.links.template?.[0])?.v.form === 'hidden',
+                  );
+                if (field.key.startsWith('signer')) {
+                  options = options.filter((r) => canSign(r, v.date) || links[field.key]?.includes(r.id));
+                  const role = roles[Number(field.key.slice(6))];
+                  options.sort((a, b) => Number(b.v.role === role) - Number(a.v.role === role));
+                }
+                return (
+                  <Links
+                    key={field.key}
+                    field={field}
+                    options={options}
+                    ids={links[field.key] || []}
+                    onChange={(ids) => changeLink(field.key, ids)}
+                  />
+                );
+              }
+              const attrs = {
+                value: v[field.key] || '',
+                required: field.required,
+                onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
+                  put(field.key, e.target.value),
+              };
+              return (
+                <label
+                  className={s.field + ' ' + (field.type === 'long' || field.key === 'name' ? s.wide : '')}
+                  key={field.key}
+                >
+                  {field.label}
+                  {field.type === 'choice' ? (
+                    <select {...attrs}>
+                      <option value="">Выберите…</option>
+                      {field.options?.map((o) => (
+                        <option key={o} value={o}>
+                          {field.key === 'form' ? formTypes[o as keyof typeof formTypes] : o}
+                        </option>
+                      ))}
+                    </select>
+                  ) : field.type === 'long' ? (
+                    <textarea rows={2} {...attrs} />
+                  ) : (
+                    <input type={field.type === 'date' ? 'date' : 'text'} {...attrs} />
+                  )}
+                </label>
+              );
+            })}
+          </div>
+        </div>
+        {error && (
+          <div className={s.alert} role="alert">
+            {error}
+          </div>
+        )}
+        <div className={s.footer}>
+          {remove && (
+            <button
+              type="button"
+              className={s.danger}
+              disabled={busy}
+              onClick={() => (confirm ? void run(remove) : setConfirm(true))}
+            >
+              <Trash2 size={15} />
+              {confirm ? 'Подтвердить удаление' : 'Удалить'}
+            </button>
+          )}
+          <button className={s.secondary} type="button" disabled={busy} onClick={close}>
+            Отмена
+          </button>
+          <button className={s.primary} disabled={busy}>
+            {busy ? 'Обработка…' : 'Сохранить'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}

@@ -553,3 +553,81 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   assert.equal((await store.transcripts(jobId)).length,0);
   assert.equal((await store.documentFields(jobId)).size,0);
 });
+
+test('construction packages persist originals atomically, isolate phases and include dependent hidden works', async () => {
+  const { entry } = await import('../shared/construction.js');
+  const JSZip = (await import('jszip')).default;
+  const app = createApp(config);
+  const api = request.agent(app);
+  await api.get('/api/construction').expect(401);
+  api.set('Cookie', cookie());
+  const created = await api.post('/api/construction').send({ name: 'Тестовый объект', phase: 'Фундамент' }).expect(201);
+  const project = created.body as import('../shared/construction.js').SavedProject;
+  const phase = project.rows.find(r => r.kind === 'phase')!;
+  const template = (form: string) => project.rows.find(r => r.kind === 'template' && r.v.form === form)!;
+  const otherPhase = entry('phase', { name: 'Кровля' });
+  const materials = Array.from({ length: 6 }, (_, i) => entry('material', { name: 'Материал ' + i, incoming: 'ВК-1', number: 'С-' + i }));
+  const hidden = entry('work', { name: 'Подготовка основания', number: '01', date: '2026-01-03' }, {
+    phase: [phase.id], template: [template('hidden').id], materials: materials.map(m => m.id),
+  });
+  const structure = entry('work', { name: 'Приёмка плиты', number: '02', date: '2026-01-05' }, {
+    phase: [phase.id], template: [template('structure').id], children: [hidden.id],
+  });
+  project.rows.push(otherPhase, ...materials, hidden, structure,
+    entry('work', { name: 'Кровельные работы', number: '03', date: '2026-01-07' }, { phase: [otherPhase.id], template: [template('hidden').id] }));
+  const original = await image();
+  const route = '/api/construction/' + project.id;
+  const saved = await api.put(route).field('project', JSON.stringify(project)).field('version', '1')
+    .field('entry', materials[0].id).attach('file', original, 'quality.jpg').expect(200);
+  assert.equal(saved.body.version, 2);
+  await api.put(route).send({ project, version: 1 }).expect(409);
+  const withoutMaterial = { ...saved.body, rows: saved.body.rows.filter((r: {id:string}) => r.id !== materials[0].id) };
+  await api.put(route).send({ project: withoutMaterial, version: 2 }).expect(400);
+  assert.equal((await api.get(route).expect(200)).body.version, 2);
+  const readBinary = (res: NodeJS.ReadableStream, done: (err: null, result: Buffer) => void) => {
+    const chunks: Buffer[] = [];
+    res.on('data', chunk => chunks.push(Buffer.from(chunk))).on('end', () => done(null, Buffer.concat(chunks)));
+  };
+  const response = await api.post(route + '/report').send({ phase: phase.id, selected: [structure.id] })
+    .buffer(true).parse(readBinary).expect(201);
+  const zip = await JSZip.loadAsync(response.body);
+  const paths = Object.keys(zip.files);
+  assert.equal(paths.filter(p => p.endsWith('.docx')).length, 2);
+  assert.equal(paths.filter(p => p.endsWith('.jpg')).length, 1);
+  assert.deepEqual(await zip.file(paths.find(p => p.endsWith('.jpg'))!)!.async('nodebuffer'), original);
+  assert.equal(paths.filter(p => p.includes('Приложение №') && p.endsWith('.xlsx')).length, 2);
+  const doc = await JSZip.loadAsync(await zip.file(paths.find(p => p.includes('АООК') && p.endsWith('.docx'))!)!.async('nodebuffer'));
+  const xml = await doc.file('word/document.xml')!.async('string');
+  assert.match(xml, /Подготовка основания/);
+  assert.doesNotMatch(xml, /Кровельные работы|Акты_ОСР/);
+  const book = new ExcelJS.Workbook();
+  await book.xlsx.load(await zip.file(paths.find(p => p.startsWith('Реестр ') && p.endsWith('.xlsx'))!)!.async('arraybuffer'));
+  assert.equal(book.getWorksheet('ЖВЗП')!.rowCount, 7);
+  assert.ok(book.getWorksheet('По типам')!.rowCount < book.getWorksheet('По актам')!.rowCount);
+  await api.post(route + '/report').send({ phase: otherPhase.id, selected: [structure.id] }).expect(400);
+  const incoming = await api.get(route + '/incoming/' + template('incoming').id).buffer(true).parse(readBinary).expect(200);
+  const avk = await JSZip.loadAsync(incoming.body);
+  const avkDoc = await JSZip.loadAsync(await avk.file(Object.keys(avk.files).find(p => p.endsWith('.docx'))!)!.async('nodebuffer'));
+  assert.match(await avkDoc.file('word/document.xml')!.async('string'), /Материал 5/);
+});
+
+test('imports workbook references by role and name, including multiple hidden acts on the structure row', async () => {
+  const { importBook } = await import('./construction/import.js');
+  const { validateProject } = await import('../shared/construction.js');
+  const book = new ExcelJS.Workbook();
+  for (const name of ['Люди','Настройки','Реквизиты','Акты','Материалы','Исп. схемы','Протоколы','ИД','СП']) book.addWorksheet(name);
+  book.getWorksheet('Реквизиты')!.getCell('B4').value = 'Объект';
+  const people = book.getWorksheet('Люди')!;
+  people.getRow(4).values = [7,'Авторский надзор','Первый А. А.'];
+  people.getRow(5).values = [7,'Авторский надзор','Второй Б. Б.'];
+  const works = book.getWorksheet('Акты')!;
+  for (let i = 1; i <= 3; i++) works.getRow(i+3).values = [i,'А-'+i,i===3?'АООК':'АОСР','','Работа '+i];
+  works.getCell('AA4').value = '[7]_Второй Б. Б.';
+  works.getCell('R6').value = '1, 2';
+  const { project, warnings } = await importBook(Buffer.from(await book.xlsx.writeBuffer()), 'Участок');
+  assert.deepEqual(warnings, []);
+  assert.equal(validateProject(project), undefined);
+  const acts = project.rows.filter(r=>r.kind==='work');
+  assert.deepEqual(acts[2].links.children, acts.slice(0,2).map(r=>r.id));
+  assert.equal(acts[0].links.signer4[0],project.rows.find(r=>r.v.name==='Второй Б. Б.')?.id);
+});

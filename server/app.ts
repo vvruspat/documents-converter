@@ -1,3 +1,4 @@
+import { projectApi } from './construction/api.js';
 import { installCatalog, projectName } from './catalog-api.js';
 import express from 'express';
 import multer from 'multer';
@@ -76,6 +77,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   });
   app.post('/api/logout', (_req, res) => { res.clearCookie('dc_session', { path: '/', httpOnly: true, secure: config.production, sameSite: 'strict' }); res.json({ ok: true }); });
   app.use('/api', (req, res, next) => { if (!authenticated(req)) { res.status(401).json({ error: 'Войдите в сервис, чтобы продолжить.' }); return; } next(); });
+  app.use('/api/construction', projectApi(history.projects));
   installCatalog(app, registry, history, config, fetcher);
   app.get('/api/settings/models', async (_req, res) => { res.json(await registry.models.get()); });
   app.put('/api/settings/models', async (req, res) => { res.json(await registry.models.save(req.body)); });
