@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import {
-  ArrowLeft,
+  Home,
   ArrowRight,
   Building2,
   ChevronRight,
@@ -34,17 +34,18 @@ import {
 } from '../../shared/construction';
 import { evaluateStandardRules, withHiddenWorks } from '../../shared/standard-rules';
 import { api, Editor, Modal, recordTitle } from './Editor';
-import { StandardRuleList } from './StandardRules';
+import { StandardsBrowser } from './StandardsBrowser';
+import { AppShell, type ShellProps } from '../AppShell';
 import s from './projects.module.css';
 
 const sections: Kind[] = [
   'work',
   'pack',
   'phase',
-  'person',
   'material',
   'scheme',
   'protocol',
+  'person',
   'standard',
   'template',
 ];
@@ -302,22 +303,37 @@ function Export({ project, phase, close }: { project: SavedProject; phase: strin
     </Modal>
   );
 }
-function Workspace({ initial, back, warnings }: { initial: SavedProject; back: () => void; warnings: string[] }) {
+function Workspace({
+  initial,
+  back,
+  warnings,
+  shell,
+  notice,
+  options,
+  switchProject,
+}: {
+  initial: SavedProject;
+  back: () => void;
+  warnings: string[];
+  shell: ShellProps;
+  notice: ReactNode;
+  options: ProjectSummary[];
+  switchProject: (id: string) => void;
+}) {
   const [project, setProject] = useState(initial),
     [phase, setPhase] = useState(initial.rows.find((r) => r.kind === 'phase')?.id || ''),
-    [tab, setTab] = useState<Kind>('work');
+    [tab, setTab] = useState<Kind>(() => {
+      const section = new URLSearchParams(location.search).get('section');
+      return sections.find(kind => kind === section) || 'work';
+    });
   const [query, setQuery] = useState(''),
     [page, setPage] = useState(0),
-    [onlyWithRules, setOnlyWithRules] = useState(false),
     [edit, setEdit] = useState<Entry | 'settings' | null>(null),
     [exporting, setExporting] = useState(false);
   const rows = project.rows.filter(
     (r) => r.kind === tab && (!['work', 'pack'].includes(tab) || r.links.phase?.includes(phase)),
   );
-  const filteringRules = tab === 'standard' && onlyWithRules;
-  const result = rows.filter(
-      (r) => (!filteringRules || r.rules?.length) && recordTitle(r).toLowerCase().includes(query.toLowerCase()),
-    ),
+  const result = rows.filter((r) => recordTitle(r).toLowerCase().includes(query.toLowerCase())),
     current = Math.min(page, Math.max(0, Math.ceil(result.length / 25) - 1));
   const incomingTemplates = project.rows.filter((r) => r.kind === 'template' && r.v.form === 'incoming');
   const [avkTemplate, setAvkTemplate] = useState('');
@@ -376,45 +392,28 @@ function Workspace({ initial, back, warnings }: { initial: SavedProject; back: (
     }
   };
   return (
-    <section className={s.root}>
-      <button className={s.back} onClick={back}>
-        <ArrowLeft size={15} />
-        Все проекты
-      </button>
-      <div className={s.heading}>
-        <div>
-          <div className={s.kicker}>
-            <Building2 size={15} /> Проект
-          </div>
-          <h1>{project.v.name}</h1>
-          {project.v.address && <p>{project.v.address}</p>}
-        </div>
-        <button className={s.primary} disabled={!phase} onClick={() => setExporting(true)}>
-          <Download size={16} /> Выгрузить комплект
-        </button>
-      </div>
-      {!!warnings.length && (
-        <details className={s.alert}>
-          <summary>Замечания при импорте · {warnings.length}</summary>
-          {warnings.map((w) => (
-            <p key={w}>{w}</p>
-          ))}
-        </details>
-      )}
-      <Tabs.Root
-        className={s.workspace}
-        value={tab}
-        orientation="vertical"
-        onValueChange={(v) => {
-          setTab(v as Kind);
-          setPage(0);
-          setQuery('');
-        }}
-      >
-        <aside className={s.sidebar}>
-          <label className={s.field}>
-            Текущая фаза
+    <Tabs.Root
+      className={s.workspace}
+      value={tab}
+      orientation="vertical"
+      onValueChange={(v) => {
+        setTab(v as Kind);
+        const url = new URL(location.href);
+        url.searchParams.set('section', v);
+        history.replaceState(null, '', url);
+        setPage(0);
+        setQuery('');
+      }}
+    >
+      <AppShell
+        {...shell}
+        breadcrumb={
+          <>
+            <Home size={15} />
+            <button onClick={back}>Проекты</button> / <span title={project.v.name}>{project.v.name}</span> /{' '}
             <select
+              className={s.phaseSelect}
+              aria-label="Текущая фаза"
               value={phase}
               onChange={(e) => {
                 setPhase(e.target.value);
@@ -422,36 +421,79 @@ function Workspace({ initial, back, warnings }: { initial: SavedProject; back: (
               }}
             >
               {phases.map((r) => (
-                <option value={r.id} key={r.id}>
+                <option key={r.id} value={r.id}>
                   {r.v.name}
                 </option>
               ))}
             </select>
-          </label>
-          <Tabs.List aria-label="Разделы проекта" className={s.menu}>
-            {sections.map((k) => {
-              const Icon = icons[k];
-              return (
-                <Tabs.Trigger key={k} value={k}>
-                  <Icon size={16} />
-                  {labels[k]}
-                </Tabs.Trigger>
-              );
-            })}
-          </Tabs.List>
-          <button className={s.settings} onClick={() => setEdit('settings')}>
-            <Settings2 size={16} />
-            Реквизиты и настройки
+          </>
+        }
+        action={
+          <button className={s.secondary} disabled={!phase} onClick={() => setExporting(true)}>
+            <Download size={15} /> Выгрузить комплект
           </button>
-        </aside>
+        }
+        sidebar={
+          <>
+            <label className={s.switcher} title={project.v.name}>
+              <Building2 size={17} />
+              <select
+                aria-label="Текущий проект"
+                value={project.id}
+                onChange={(e) => (e.target.value ? switchProject(e.target.value) : back())}
+              >
+                <option value={project.id}>{project.v.name}</option>
+                {options
+                  .filter((p) => p.id !== project.id)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                <option value="">Все проекты</option>
+              </select>
+            </label>
+            <Tabs.List aria-label="Разделы проекта" className={s.menu}>
+              {sections.map((k) => {
+                const Icon = icons[k];
+                return (
+                  <Tabs.Trigger key={k} value={k} data-section={k} title={labels[k]} aria-label={labels[k]}>
+                    <Icon size={16} />
+                    <span>{labels[k]}</span>
+                  </Tabs.Trigger>
+                );
+              })}
+            </Tabs.List>
+            <button
+              className={s.settings}
+              title="Реквизиты и настройки"
+              aria-label="Реквизиты и настройки"
+              onClick={() => setEdit('settings')}
+            >
+              <Settings2 size={16} />
+              <span>Реквизиты и настройки</span>
+            </button>
+          </>
+        }
+      >
+        {notice}
+        {!!warnings.length && (
+          <details className={s.alert}>
+            <summary>Замечания при импорте · {warnings.length}</summary>
+            {warnings.map((w) => (
+              <p key={w}>{w}</p>
+            ))}
+          </details>
+        )}
+
         <Tabs.Content key={tab} value={tab} className={s.panel}>
           <div className={s.rowHeading}>
             <h2>
               {labels[tab]} <span>{rows.length}</span>
             </h2>
-            <button className={s.secondary} onClick={add}>
+            <button className={s.primary} onClick={add}>
               <Plus size={16} />
-              Добавить
+              {tab === 'standard' ? 'Норматив' : 'Добавить'}
             </button>
           </div>
           {tab === 'material' && rows.length > 0 && incomingTemplates.length > 0 && (
@@ -486,182 +528,170 @@ function Workspace({ initial, back, warnings }: { initial: SavedProject; back: (
               </a>
             </div>
           )}
-          <label className={s.search}>
-            <Search size={16} />
-            <input
-              aria-label="Поиск записей"
-              placeholder="Поиск по названию или номеру"
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setPage(0);
-              }}
-            />
-          </label>
-          {tab === 'standard' && (
-            <div className={s.standardOptions}>
-              <p>
-                Выбранный для работы норматив указывается в АОСР и АООК. Правила ниже задают дополнительные
-                изменения полей и требования к приложениям.
-              </p>
-              <label>
+          {tab === 'standard' ? (
+            <StandardsBrowser rows={rows} edit={setEdit} />
+          ) : (
+            <>
+              <label className={s.search}>
+                <Search size={16} />
                 <input
-                  type="checkbox"
-                  checked={onlyWithRules}
+                  aria-label="Поиск записей"
+                  placeholder="Поиск по названию или номеру"
+                  value={query}
                   onChange={(e) => {
-                    setOnlyWithRules(e.target.checked);
+                    setQuery(e.target.value);
                     setPage(0);
                   }}
-                />{' '}
-                Только с настроенными правилами
+                />
               </label>
-            </div>
-          )}
-          {result.slice(current * 25, current * 25 + 25).map((r) => {
-            const record = (
-              <button className={s.record} key={r.id} onClick={() => setEdit(r)}>
-                <span>
-                  <strong>{r.v.name}</strong>
-                  <small>{rowDetails(r)}</small>
-                  {r.kind === 'standard' && !r.rules?.length && <small>Дополнительных правил нет</small>}
-                </span>
-                <ChevronRight size={16} />
-              </button>
-            );
-            return r.kind === 'standard' && r.rules?.length ? (
-              <div className={s.standardRecord} key={r.id}>
-                {record}
-                <StandardRuleList rules={r.rules} />
-              </div>
-            ) : (
-              record
-            );
-          })}
-          {!result.length && (
-            <div className={s.empty}>
-              <FolderOpen size={30} />
-              <h3>
-                {query
-                  ? 'Совпадений нет'
-                  : filteringRules
-                    ? 'Нормативов с правилами пока нет'
-                    : 'Пока нет записей'}
-              </h3>
-              {filteringRules && (
-                <button
-                  className={s.text}
-                  onClick={() => {
-                    setOnlyWithRules(false);
-                    setQuery('');
-                    setPage(0);
-                  }}
-                >
-                  Показать все нормативы
+              {result.slice(current * 25, current * 25 + 25).map((r) => (
+                <button className={s.record} key={r.id} onClick={() => setEdit(r)}>
+                  <span>
+                    <strong>{r.v.name}</strong>
+                    <small>{rowDetails(r)}</small>
+                  </span>
+                  <ChevronRight size={16} />
                 </button>
+              ))}
+              {!result.length && (
+                <div className={s.empty}>
+                  <FolderOpen size={30} />
+                  <h3>{query ? 'Совпадений нет' : 'Пока нет записей'}</h3>
+                  {!query && (
+                    <button className={s.text} onClick={add}>
+                      Добавить первую запись
+                    </button>
+                  )}
+                </div>
               )}
-              {!query && !filteringRules && (
-                <button className={s.text} onClick={add}>
-                  Добавить первую запись
-                </button>
+              {result.length > 25 && (
+                <div className={s.pager}>
+                  <button disabled={!current} onClick={() => setPage(current - 1)}>
+                    Назад
+                  </button>
+                  <span>
+                    {current * 25 + 1}–{Math.min(result.length, current * 25 + 25)} из {result.length}
+                  </span>
+                  <button disabled={(current + 1) * 25 >= result.length} onClick={() => setPage(current + 1)}>
+                    Далее
+                  </button>
+                </div>
               )}
-            </div>
-          )}
-          {result.length > 25 && (
-            <div className={s.pager}>
-              <button disabled={!current} onClick={() => setPage(current - 1)}>
-                Назад
-              </button>
-              <span>
-                {current * 25 + 1}–{Math.min(result.length, current * 25 + 25)} из {result.length}
-              </span>
-              <button disabled={(current + 1) * 25 >= result.length} onClick={() => setPage(current + 1)}>
-                Далее
-              </button>
-            </div>
+            </>
           )}
         </Tabs.Content>
-      </Tabs.Root>
-      {edit && (
-        <Editor
-          project={project}
-          row={edit === 'settings' ? undefined : edit}
-          title={edit === 'settings' ? 'Реквизиты и настройки' : single[edit.kind]}
-          close={() => setEdit(null)}
-          remove={
-            existing
-              ? () => persist({ ...project, rows: project.rows.filter((r) => r.id !== edit.id) })
-              : undefined
-          }
-          save={(v, links, file, detach, rules) => {
-            if (edit === 'settings') return persist({ ...project, v });
-            const r = { ...edit, v, links, rules };
-            if (detach) delete r.file;
-            return persist(
-              {
-                ...project,
-                rows: existing ? project.rows.map((x) => (x.id === r.id ? r : x)) : [...project.rows, r],
-              },
-              file,
-              r.id,
-            );
-          }}
-        />
-      )}
-      {exporting && <Export project={project} phase={phase} close={() => setExporting(false)} />}
-    </section>
+        {edit && (
+          <Editor
+            project={project}
+            row={edit === 'settings' ? undefined : edit}
+            title={edit === 'settings' ? 'Реквизиты и настройки' : single[edit.kind]}
+            close={() => setEdit(null)}
+            remove={
+              existing
+                ? () => persist({ ...project, rows: project.rows.filter((r) => r.id !== edit.id) })
+                : undefined
+            }
+            save={(v, links, file, detach, rules) => {
+              if (edit === 'settings') return persist({ ...project, v });
+              const r = { ...edit, v, links, rules };
+              if (detach) delete r.file;
+              return persist(
+                {
+                  ...project,
+                  rows: existing ? project.rows.map((x) => (x.id === r.id ? r : x)) : [...project.rows, r],
+                },
+                file,
+                r.id,
+              );
+            }}
+          />
+        )}
+        {exporting && <Export project={project} phase={phase} close={() => setExporting(false)} />}
+      </AppShell>
+    </Tabs.Root>
   );
 }
-export function Projects() {
+export function Projects({ shell, notice }: { shell: ShellProps; notice: ReactNode }) {
   const [items, setItems] = useState<ProjectSummary[]>([]),
     [active, setActive] = useState<SavedProject>(),
     [mode, setMode] = useState<'create' | 'import'>(),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(''),
     [warnings, setWarnings] = useState<string[]>([]);
+  const requestNumber = useRef(0);
   async function list() {
+    const current = ++requestNumber.current;
     setLoading(true);
     setError('');
     try {
-      setItems(await (await api('')).json());
+      const options = await (await api('')).json();
+      if (current === requestNumber.current) setItems(options);
     } catch (e) {
-      setError((e as Error).message);
+      if (current === requestNumber.current) setError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (current === requestNumber.current) setLoading(false);
     }
   }
   useEffect(() => {
     const sync = () => {
       const id = new URLSearchParams(location.search).get('project');
-      if (id && /^[0-9a-f-]{36}$/i.test(id)) void open(id);
-      else {
+      if (id && /^[0-9a-f-]{36}$/i.test(id)) {
+        void open(id);
+        void api('')
+          .then((r) => r.json())
+          .then(setItems)
+          .catch(() => {});
+      } else {
         setActive(undefined);
         void list();
       }
     };
     sync();
     addEventListener('popstate', sync);
-    return () => removeEventListener('popstate', sync);
+    return () => {
+      ++requestNumber.current;
+      removeEventListener('popstate', sync);
+    };
   }, []);
   function select(id: string) {
     history.pushState(null, '', '/projects?project=' + encodeURIComponent(id));
     void open(id);
   }
   async function open(id: string) {
+    const current = ++requestNumber.current;
     setLoading(true);
     setError('');
     try {
-      setActive(await (await api('/' + id)).json());
+      const next = await (await api('/' + id)).json();
+      if (requestNumber.current !== current) return;
+      setActive(next);
       setWarnings([]);
     } catch (e) {
-      setError((e as Error).message);
+      if (current === requestNumber.current) {
+        setActive(undefined);
+        setError((e as Error).message);
+      }
     } finally {
-      setLoading(false);
+      if (current === requestNumber.current) setLoading(false);
     }
   }
   if (active)
     return (
       <Workspace
         key={active.id}
+        shell={shell}
+        notice={
+          <>
+            {notice}
+            {error && (
+              <p role="alert" className={s.alert}>
+                {error}
+              </p>
+            )}
+          </>
+        }
+        options={items}
+        switchProject={select}
         initial={active}
         warnings={warnings}
         back={() => {
@@ -672,69 +702,72 @@ export function Projects() {
       />
     );
   return (
-    <section className={s.root}>
-      <div className={s.heading}>
-        <div>
-          <div className={s.kicker}>
-            <Layers3 size={15} />
-            Исполнительная документация
+    <AppShell {...shell}>
+      <section className={s.root}>
+        {notice}
+        <div className={s.heading}>
+          <div>
+            <div className={s.kicker}>
+              <Layers3 size={15} />
+              Исполнительная документация
+            </div>
+            <h1>Строительные проекты</h1>
           </div>
-          <h1>Строительные проекты</h1>
-        </div>
-        <div className={s.actions}>
-          <button className={s.secondary} onClick={() => setMode('import')}>
-            <Upload size={16} />
-            Импорт Excel
-          </button>
-          <button className={s.primary} onClick={() => setMode('create')}>
-            <Plus size={17} />
-            Новый проект
-          </button>
-        </div>
-      </div>
-      {error && (
-        <div className={s.alert} role="alert">
-          {error} <button onClick={() => void list()}>Повторить</button>
-        </div>
-      )}
-      {loading ? (
-        <p role="status">Загрузка проектов…</p>
-      ) : items.length ? (
-        <div className={s.cards}>
-          {items.map((p) => (
-            <button key={p.id} className={s.card} onClick={() => select(p.id)}>
-              <Folder size={23} />
-              <h2>{p.name}</h2>
-              <div>
-                <span>
-                  Фазы · {p.phases}　 Акты · {p.works}
-                </span>
-                <ArrowRight size={17} />
-              </div>
+          <div className={s.actions}>
+            <button className={s.secondary} onClick={() => setMode('import')}>
+              <Upload size={16} />
+              Импорт Excel
             </button>
-          ))}
-        </div>
-      ) : (
-        !error && (
-          <div className={s.empty}>
-            <Building2 size={35} />
-            <h3>Первый строительный проект</h3>
-            <p>Начните с названия объекта и первой фазы или перенесите данные из книги автогенератора.</p>
+            <button className={s.primary} onClick={() => setMode('create')}>
+              <Plus size={17} />
+              Новый проект
+            </button>
           </div>
-        )
-      )}
-      {mode && (
-        <ProjectStart
-          mode={mode}
-          close={() => setMode(undefined)}
-          created={(p, w) => {
-            setMode(undefined);
-            history.pushState(null, '', '/projects?project=' + encodeURIComponent(p.id));
-            setActive(p);
-            setWarnings(w);
-          }}
-        />
-      )}
-    </section>
+        </div>
+        {error && (
+          <div className={s.alert} role="alert">
+            {error} <button onClick={() => void list()}>Повторить</button>
+          </div>
+        )}
+        {loading ? (
+          <p role="status">Загрузка проектов…</p>
+        ) : items.length ? (
+          <div className={s.cards}>
+            {items.map((p) => (
+              <button key={p.id} className={s.card} onClick={() => select(p.id)}>
+                <Folder size={23} />
+                <h2>{p.name}</h2>
+                <div>
+                  <span>
+                    Фазы · {p.phases}　 Акты · {p.works}
+                  </span>
+                  <ArrowRight size={17} />
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : (
+          !error && (
+            <div className={s.empty}>
+              <Building2 size={35} />
+              <h3>Первый строительный проект</h3>
+              <p>Начните с названия объекта и первой фазы или перенесите данные из книги автогенератора.</p>
+            </div>
+          )
+        )}
+        {mode && (
+          <ProjectStart
+            mode={mode}
+            close={() => setMode(undefined)}
+            created={(p, w) => {
+              setMode(undefined);
+              history.pushState(null, '', '/projects?project=' + encodeURIComponent(p.id));
+              setActive(p);
+              setWarnings(w);
+            }}
+          />
+        )}
+      </section>
+    </AppShell>
   );
 }

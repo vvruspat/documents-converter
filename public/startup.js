@@ -1,5 +1,10 @@
 // Keep this small, dependency-free and compatible with browsers that cannot parse the app bundle.
 (function () {
+  try {
+    var theme = localStorage.getItem('docs.theme');
+    document.documentElement.dataset.theme = theme === 'dark' || theme === 'light' ? theme :
+      (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  } catch (ignored) { /* Storage can be disabled by the browser. */ }
   function showFailure(code) {
     if (!document.getElementById('startup')) return;
     document.getElementById('startup-status').textContent = 'Не удалось загрузить приложение.';
