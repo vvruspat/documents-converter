@@ -531,3 +531,49 @@
 .rule button {
   margin-top: 10px;
 }
+.standardOptions,
+.savedRules {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.standardOptions p {
+  margin: 10px 0 6px;
+  color: #52675c;
+}
+.standardOptions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+.standardOptions input {
+  accent-color: var(--accent);
+}
+.standardRecord {
+  border-bottom: 1px solid var(--border);
+}
+.standardRecord .record {
+  border-bottom: 0;
+  padding-bottom: 4px;
+}
+.savedRules {
+  padding: 0 4px 10px;
+  overflow-wrap: anywhere;
+}
+.savedRules summary {
+  width: fit-content;
+  color: var(--accent);
+  cursor: pointer;
+}
+.savedRules ul {
+  margin: 8px 0 0;
+  padding: 0 0 0 22px;
+}
+.savedRules li + li {
+  margin-top: 8px;
+}
+.savedRules p {
+  margin: 2px 0;
+  white-space: pre-wrap;
+}
