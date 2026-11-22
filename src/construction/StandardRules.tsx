@@ -10,6 +10,38 @@ import {
 } from '../../shared/standard-rules';
 import s from './projects.module.css';
 
+export function StandardRuleList({ rules }: { rules: StandardRule[] }) {
+  return (
+    <details className={s.savedRules}>
+      <summary>Настроенные правила · {rules.length}</summary>
+      <ul>
+        {rules.map((rule, i) => (
+          <li key={i}>
+            <strong>{formTypes[rule.form]}</strong>
+            {' · '}
+            {rule.workContains.trim()
+              ? 'Название работы содержит «' + rule.workContains + '»'
+              : 'Все работы с этим нормативом'}
+            {rule.action === 'require' ? (
+              <p>
+                Требуется оригинал · {attachments[rule.category]} ·{' '}
+                {rule.document.trim() || 'Любой документ этой категории'}
+              </p>
+            ) : (
+              <p>
+                {rule.action === 'append' ? 'Дополнить поле' : 'Заменить текст поля'} «
+                {textFields[rule.field].label}»<br />
+                {rule.text}
+              </p>
+            )}
+            {rule.clause.trim() && <small>Основание · {rule.clause}</small>}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 export function StandardRules({
   rules,
   change,

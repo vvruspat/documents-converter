@@ -34,6 +34,7 @@ import {
 } from '../../shared/construction';
 import { evaluateStandardRules, withHiddenWorks } from '../../shared/standard-rules';
 import { api, Editor, Modal, recordTitle } from './Editor';
+import { StandardRuleList } from './StandardRules';
 import s from './projects.module.css';
 
 const sections: Kind[] = [
@@ -307,12 +308,16 @@ function Workspace({ initial, back, warnings }: { initial: SavedProject; back: (
     [tab, setTab] = useState<Kind>('work');
   const [query, setQuery] = useState(''),
     [page, setPage] = useState(0),
+    [onlyWithRules, setOnlyWithRules] = useState(false),
     [edit, setEdit] = useState<Entry | 'settings' | null>(null),
     [exporting, setExporting] = useState(false);
   const rows = project.rows.filter(
     (r) => r.kind === tab && (!['work', 'pack'].includes(tab) || r.links.phase?.includes(phase)),
   );
-  const result = rows.filter((r) => recordTitle(r).toLowerCase().includes(query.toLowerCase())),
+  const filteringRules = tab === 'standard' && onlyWithRules;
+  const result = rows.filter(
+      (r) => (!filteringRules || r.rules?.length) && recordTitle(r).toLowerCase().includes(query.toLowerCase()),
+    ),
     current = Math.min(page, Math.max(0, Math.ceil(result.length / 25) - 1));
   const incomingTemplates = project.rows.filter((r) => r.kind === 'template' && r.v.form === 'incoming');
   const [avkTemplate, setAvkTemplate] = useState('');
@@ -493,20 +498,68 @@ function Workspace({ initial, back, warnings }: { initial: SavedProject; back: (
               }}
             />
           </label>
-          {result.slice(current * 25, current * 25 + 25).map((r) => (
-            <button className={s.record} key={r.id} onClick={() => setEdit(r)}>
-              <span>
-                <strong>{r.v.name}</strong>
-                <small>{rowDetails(r)}</small>
-              </span>
-              <ChevronRight size={16} />
-            </button>
-          ))}
+          {tab === 'standard' && (
+            <div className={s.standardOptions}>
+              <p>
+                Выбранный для работы норматив указывается в АОСР и АООК. Правила ниже задают дополнительные
+                изменения полей и требования к приложениям.
+              </p>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={onlyWithRules}
+                  onChange={(e) => {
+                    setOnlyWithRules(e.target.checked);
+                    setPage(0);
+                  }}
+                />{' '}
+                Только с настроенными правилами
+              </label>
+            </div>
+          )}
+          {result.slice(current * 25, current * 25 + 25).map((r) => {
+            const record = (
+              <button className={s.record} key={r.id} onClick={() => setEdit(r)}>
+                <span>
+                  <strong>{r.v.name}</strong>
+                  <small>{rowDetails(r)}</small>
+                  {r.kind === 'standard' && !r.rules?.length && <small>Дополнительных правил нет</small>}
+                </span>
+                <ChevronRight size={16} />
+              </button>
+            );
+            return r.kind === 'standard' && r.rules?.length ? (
+              <div className={s.standardRecord} key={r.id}>
+                {record}
+                <StandardRuleList rules={r.rules} />
+              </div>
+            ) : (
+              record
+            );
+          })}
           {!result.length && (
             <div className={s.empty}>
               <FolderOpen size={30} />
-              <h3>{query ? 'Совпадений нет' : 'Пока нет записей'}</h3>
-              {!query && (
+              <h3>
+                {query
+                  ? 'Совпадений нет'
+                  : filteringRules
+                    ? 'Нормативов с правилами пока нет'
+                    : 'Пока нет записей'}
+              </h3>
+              {filteringRules && (
+                <button
+                  className={s.text}
+                  onClick={() => {
+                    setOnlyWithRules(false);
+                    setQuery('');
+                    setPage(0);
+                  }}
+                >
+                  Показать все нормативы
+                </button>
+              )}
+              {!query && !filteringRules && (
                 <button className={s.text} onClick={add}>
                   Добавить первую запись
                 </button>
