@@ -16,7 +16,6 @@ import { createSession, passwordMatches, validSession } from './auth.js';
 import { cellValue, exportExcel } from './excel.js';
 import { parseDocument, recognizeImage, recognizePdf, validatePdf, normalizeImage } from './recognize.js';
 import { documentSchema, exportSchema, type ExtractedDocument } from '../shared/document.js';
-import { MAX_PDF_PAGES, MAX_FILE_BYTES } from '../shared/upload.js';
 import { ConversionStore, safeFilename, type StoreOptions } from './history.js';
 
 test.mock.method(globalThis, 'fetch', async (url: string) => {
@@ -295,20 +294,69 @@ test('browser diagnostics work without login or JavaScript and distinguish legac
   assert.ok(unknown.text.includes('Браузер: не определён'));
 });
 
-async function pdfWithPages(count: number): Promise<Buffer> {
+async function pdfWithPages(count: number, paddingBytes = 0): Promise<Buffer> {
   const document = await PDFDocument.create();
   for (let i = 0; i < count; i++) document.addPage().drawText(`Table on page ${i + 1}`);
+  if (paddingBytes) {
+    const padding = document.context.stream(Buffer.alloc(paddingBytes, 32));
+    document.getPage(0).node.addContentStream(document.context.register(padding));
+  }
   return Buffer.from(await document.save({ addDefaultPage: false }));
 }
 
-test('PDF validation accepts all pages and rejects invalid, empty, encrypted and oversized documents', async () => {
+test('PDF validation accepts all pages and rejects invalid, empty and encrypted documents', async () => {
   assert.equal(await validatePdf(await pdfWithPages(2)), 2);
-  assert.equal(await validatePdf(await pdfWithPages(MAX_PDF_PAGES)), MAX_PDF_PAGES);
   await assert.rejects(validatePdf(Buffer.from('%PDF-1.7\nnot a PDF')), /прочитать PDF/);
   await assert.rejects(validatePdf(await pdfWithPages(0)), /не содержит страниц/);
-  await assert.rejects(validatePdf(await pdfWithPages(MAX_PDF_PAGES + 1)), /20 страниц/);
   await assert.rejects(validatePdf(await readFile(new URL('./fixtures/password-protected.pdf', import.meta.url))), /защищён паролем/);
-  await assert.rejects(validatePdf(Buffer.alloc(MAX_FILE_BYTES + 1)), /12 МБ/);
+});
+
+test('converts a 21-page PDF larger than 12 MiB and builds a register from the same source', async () => {
+  const pdf = await pdfWithPages(21, 13 * 1024 * 1024);
+  const settings = await options();
+  const historyStore = await openStore(settings);
+  const app = createApp({ ...config, dataDir: settings.directory, historyStore }, async (url, init) => {
+    const body = JSON.parse(String(init?.body));
+    const schema = body.response_format.json_schema.name;
+    if (schema === 'document_tables') {
+      assert.deepEqual(Buffer.from(body.messages[1].content[1].file.file_data.split(',')[1], 'base64'), pdf);
+      return mock(url, init);
+    }
+    let data;
+    if (schema === 'registry_transcript') {
+      const { page } = JSON.parse(body.messages[1].content[0].text);
+      data = { blank: false, object: '', section: '', continuation: '', regions: [],
+        documents: [{ title: 'Certificate ' + page, text: 'Certificate number ' + page }] };
+    } else {
+      assert.equal(schema, 'registry_document_fields');
+      const [part] = JSON.parse(body.messages[1].content);
+      data = { kind: 'Сертификат', name: part.title, number: 'C-' + part.page, date: '', organization: '',
+        material: '', batch: '', work: '', section: '', floor: '', reviewFields: [], evidence: [] };
+    }
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(data) } }] });
+  });
+  const client = request(app);
+  const converted = await client.post('/api/recognize').set('Cookie', cookie()).attach('image', pdf, 'kit.pdf').expect(200);
+  assert.deepEqual(converted.body.document, fixture);
+  const created = await client.post('/api/registry').set('Cookie', cookie()).attach('pdf', pdf, 'kit.pdf').expect(202);
+  const url = '/api/registry/' + created.body.job.id;
+  let job = created.body.job;
+  const deadline = Date.now() + 120_000;
+  while (['working', 'queued'].includes(job.status) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 200));
+    job = (await client.get(url).set('Cookie', cookie()).expect(200)).body.job;
+  }
+  assert.equal(job.status, 'done', job.error);
+  assert.equal(job.processedPages, 21);
+  assert.equal(job.recordCount, 21);
+  const result = await client.get(url + '/result').set('Cookie', cookie()).buffer(true).parse((res, done) => {
+    const chunks: Buffer[] = [];
+    res.on('data', chunk => chunks.push(Buffer.from(chunk)));
+    res.on('end', () => done(null, Buffer.concat(chunks)));
+  }).expect(200);
+  const book = new ExcelJS.Workbook();
+  await book.xlsx.load(result.body);
+  for (let i = 1; i <= 21; i++) assert.equal(book.worksheets[0].getCell('C' + (7 + i)).value, 'C-' + i);
 });
 
 test('native OpenRouter PDF input preserves the complete file and all-page extraction instructions', async () => {
@@ -337,7 +385,6 @@ test('invalid PDFs are rejected before any paid model request or history record'
   for (const [pdf, message] of [
     [Buffer.from('not a PDF'), 'прочитать PDF'],
     [await pdfWithPages(0), 'не содержит страниц'],
-    [await pdfWithPages(MAX_PDF_PAGES + 1), '20 страниц'],
     [await readFile(new URL('./fixtures/password-protected.pdf', import.meta.url)), 'защищён паролем'],
   ] as const) {
     const result = await request(app).post('/api/recognize').set('Cookie', cookie()).attach('image', pdf, { filename: 'test.pdf', contentType: 'application/pdf' }).expect(400);
@@ -369,11 +416,11 @@ test('scan-only multipage PDFs convert to Excel, retain the source, and can be d
   await request(app).get(`/api/history/${entry.id}/result`).set('Cookie', cookie()).expect(404);
 });
 
-test('multipage documents can contain more than eight separate tables', async () => {
-  const document = { ...fixture, tables: Array.from({ length: 20 }, (_, index) => ({ title: `Page ${index + 1}`, columns: ['Code'], rows: [[`000${index + 1}`]], uncertainCells: [] })) };
+test('multipage documents can contain more than forty separate tables', async () => {
+  const document = { ...fixture, tables: Array.from({ length: 41 }, (_, index) => ({ title: `Page ${index + 1}`, columns: ['Code'], rows: [[`000${index + 1}`]], uncertainCells: [] })) };
   assert.ok(documentSchema.safeParse(document).success);
-  const book = new ExcelJS.Workbook(); await book.xlsx.load(await exportExcel({ documents: [{ name: 'twenty-pages.pdf', document }] }));
-  assert.equal(book.worksheets.length, 20);
+  const book = new ExcelJS.Workbook(); await book.xlsx.load(await exportExcel({ documents: [{ name: 'many-tables.pdf', document }] }));
+  assert.equal(book.worksheets.length, 41);
 });
 
 test('indexes old jobs, groups matching sources and resolves a kit when its document arrives', async () => {

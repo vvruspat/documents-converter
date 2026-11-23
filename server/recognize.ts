@@ -1,7 +1,6 @@
 import { reasoningFor } from './reasoning.js';
 import sharp from 'sharp';
 import { Worker } from 'node:worker_threads';
-import { MAX_FILE_BYTES, MAX_PDF_PAGES } from '../shared/upload.js';
 import { documentSchema, type ExtractedDocument } from '../shared/document.js';
 
 export class UserError extends Error {
@@ -41,7 +40,7 @@ If there are no tables, return tables: [] with a specific warning in Russian. If
 
 export async function normalizeImage(buffer: Buffer): Promise<Buffer> {
   try {
-    const image = sharp(buffer, { limitInputPixels: 60_000_000, failOn: 'error', animated: false });
+    const image = sharp(buffer, { limitInputPixels: false, failOn: 'error', animated: false });
     const meta = await image.metadata();
     if (!meta.width || !meta.height || !['jpeg', 'png', 'webp'].includes(meta.format ?? '')) throw new Error();
     if ((meta.pages ?? 1) > 1) throw new Error();
@@ -53,7 +52,7 @@ export async function normalizeImage(buffer: Buffer): Promise<Buffer> {
 }
 
 export async function validatePdf(buffer: Buffer): Promise<number> {
-  if (!buffer.length || buffer.length > MAX_FILE_BYTES || !buffer.subarray(0, 1024).includes(Buffer.from('%PDF-'))) throw new UserError('Не удалось прочитать PDF. Загрузите корректный PDF-файл до 12 МБ.');
+  if (!buffer.length || !buffer.subarray(0, 1024).includes(Buffer.from('%PDF-'))) throw new UserError('Не удалось прочитать PDF. Загрузите корректный PDF-файл.');
   // Parsing untrusted PDF data must not block the HTTP process or expose parser diagnostics.
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL(`./pdf-worker.${import.meta.url.endsWith('.ts') ? 'ts' : 'js'}`, import.meta.url), {
@@ -70,7 +69,6 @@ export async function validatePdf(buffer: Buffer): Promise<number> {
     worker.once('message', (result: { pages?: number; error?: string }) => {
       if (result.error === 'encrypted') { finish(new UserError('PDF защищён паролем. Сначала сохраните копию без пароля.')); return; }
       if (!Number.isInteger(result.pages) || !result.pages || result.pages < 1) { finish(new UserError('Не удалось прочитать PDF. Файл повреждён или не содержит страниц.')); return; }
-      if (result.pages > MAX_PDF_PAGES) { finish(new UserError(`В PDF больше ${MAX_PDF_PAGES} страниц. Разделите его на несколько файлов.`)); return; }
       finish(undefined, result.pages);
     });
     worker.once('error', () => finish(new UserError('Не удалось прочитать PDF. Сохраните его заново или разделите на части.')));
@@ -119,7 +117,6 @@ async function requestRecognition(input: RecognitionInput, apiKey: string, model
         ],
         response_format: { type: 'json_schema', json_schema: { name: 'document_tables', strict: true, schema: outputSchema } },
       }),
-      signal: AbortSignal.timeout(150_000),
     });
   } catch (error) {
     const timedOut = error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name);

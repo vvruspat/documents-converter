@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import {
-  Archive,
+  Files,
   Building2,
   ChevronLeft,
   ChevronRight,
@@ -16,11 +16,11 @@ import { ModelSettingsButton } from './ModelSettings';
 import s from './shell.module.css';
 
 export type Page = 'convert' | 'history' | 'registry' | 'projects';
-export type ShellProps = { page: Page; navigate: (page: Page) => void; logout?: () => void; busy: boolean };
-const routes = [
+export type ShellProps = { page: Page; navigate: (page: Page, search?: string) => void; logout?: () => void; busy: boolean };
+export const routes = [
+  { page: 'registry', title: 'Реестры документов', icon: Files, path: '/' },
   { page: 'projects', title: 'Строительство', icon: Building2, path: '/projects' },
-  { page: 'convert', title: 'Конвертер', icon: FileSpreadsheet, path: '/' },
-  { page: 'registry', title: 'Архив проектов', icon: Archive, path: '/registry' },
+  { page: 'convert', title: 'Таблицы в Excel', icon: FileSpreadsheet, path: '/convert' },
   { page: 'history', title: 'История', icon: History, path: '/history' },
 ] as const;
 function preference(key: string) {

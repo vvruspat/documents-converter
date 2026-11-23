@@ -224,7 +224,7 @@ test('retry keeps recognized pages and continues after an upstream error', async
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test('accepts a PDF larger than the ordinary converter limit', async () => {
+test('accepts a large scanned PDF and serves the resulting workbook', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'registry-upload-test-'));
   try {
     const queue = new RegistryQueue({ directory, apiKey: 'test', model: 'test', fetcher: (async () => new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ blank: true, continuesPrevious: false, documents: [] }) } }] }), { status: 200 })) as typeof fetch });

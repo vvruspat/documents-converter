@@ -10,7 +10,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { exportSchema } from '../shared/document.js';
-import { IMAGE_MIMES, MAX_FILE_BYTES, MAX_PDF_PAGES, isPdfUpload } from '../shared/upload.js';
+import { IMAGE_MIMES, isPdfUpload } from '../shared/upload.js';
 import { createSession, passwordMatches, validSession } from './auth.js';
 import { normalizeImage, recognizeImage, recognizePdf, UserError } from './recognize.js';
 import { exportExcel } from './excel.js';
@@ -26,7 +26,6 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   app.locals.conversionStore = history;
   const registry = config.registryQueue ?? new RegistryQueue({ directory: config.dataDir ?? path.resolve('.local/data'), apiKey: config.apiKey, model: config.model, regionModel: config.regionModel, store: history, fetcher });
   app.locals.registryQueue = registry;
-  let activeRecognitions = 0;
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy ?? 1);
   app.use(helmet({ contentSecurityPolicy: config.production ? { directives: { defaultSrc: ["'self'"], imgSrc: ["'self'", 'blob:', 'data:'], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], connectSrc: ["'self'"], objectSrc: ["'none'"], frameAncestors: ["'none'"] } } : false }));
@@ -59,7 +58,6 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
     try { await history.checkHealth(); res.json({ status: 'ok', commit: config.commit ?? 'development', database: 'postgresql' }); }
     catch { res.status(503).json({ status: 'unavailable', commit: config.commit ?? 'development' }); }
   });
-  app.use('/api', express.json({ limit: '4mb' }));
   app.use('/api', (req, res, next) => {
     const origin = req.headers.origin;
     const sameOrigin = !origin || origin === `${req.protocol}://${req.get('host')}`;
@@ -69,7 +67,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   });
   const authenticated = (req: express.Request) => !config.password || validSession(req.cookies['dc_session'], config.sessionSecret, config.password);
   app.get('/api/session', (req, res) => { res.json({ authenticated: authenticated(req), passwordRequired: Boolean(config.password) }); });
-  app.post('/api/login', rateLimit({ windowMs: 15 * 60_000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, skipSuccessfulRequests: true, message: { error: 'Слишком много попыток входа. Попробуйте через 15 минут.' } }), (req, res) => {
+  app.post('/api/login', rateLimit({ windowMs: 15 * 60_000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, skipSuccessfulRequests: true, message: { error: 'Слишком много попыток входа. Попробуйте через 15 минут.' } }), express.json({ limit: '4mb' }), (req, res) => {
     const input = z.object({ password: z.string().max(1000) }).safeParse(req.body);
     if (!input.success || !passwordMatches(input.data.password, config.password)) { res.status(401).json({ error: 'Неверный пароль.' }); return; }
     res.cookie('dc_session', createSession(config.sessionSecret, config.password), { httpOnly: true, secure: config.production, sameSite: 'strict', path: '/', maxAge: 24 * 60 * 60_000 });
@@ -77,36 +75,40 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   });
   app.post('/api/logout', (_req, res) => { res.clearCookie('dc_session', { path: '/', httpOnly: true, secure: config.production, sameSite: 'strict' }); res.json({ ok: true }); });
   app.use('/api', (req, res, next) => { if (!authenticated(req)) { res.status(401).json({ error: 'Войдите в сервис, чтобы продолжить.' }); return; } next(); });
+  app.post('/api/export', express.json({ limit: Infinity }), async (req, res) => {
+    const input = exportSchema.safeParse(req.body);
+    if (!input.success) throw new UserError('Таблица пуста или повреждена.');
+    const buffer = await exportExcel(input.data);
+    res.set({ 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="document.xlsx"', 'Content-Length': String(buffer.length) });
+    res.send(buffer);
+  });
+  app.use('/api', express.json({ limit: '4mb' }));
   app.use('/api/construction', projectApi(history.projects));
   installCatalog(app, registry, history, config, fetcher);
   app.get('/api/settings/models', async (_req, res) => { res.json(await registry.models.get()); });
   app.put('/api/settings/models', async (req, res) => { res.json(await registry.models.save(req.body)); });
-  app.get('/api/config', async (_req, res) => { res.json({ configured: Boolean(config.apiKey), model: (await registry.models.get()).recognition, maxFileBytes: MAX_FILE_BYTES, maxPdfPages: MAX_PDF_PAGES, supportedMimeTypes: [...IMAGE_MIMES, 'application/pdf'] }); });
-  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_BYTES, files: 1, fields: 0, parts: 1 } });
+  app.get('/api/config', async (_req, res) => { res.json({ configured: Boolean(config.apiKey), model: (await registry.models.get()).recognition, maxFileBytes: null, maxPdfPages: null, supportedMimeTypes: [...IMAGE_MIMES, 'application/pdf'] }); });
+  const upload = multer({ storage: multer.memoryStorage(), limits: { files: 1, fields: 0, parts: 1 } });
   const registryUpload = multer({ storage: multer.diskStorage({ destination: registry.uploadDirectory, filename: (_req, _file, callback) => callback(null, `${randomUUID()}.upload`) }), limits: { files: 1, fields: 0, parts: 1 } });
-  app.post('/api/recognize', rateLimit({ windowMs: 10 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Достигнут лимит: 20 распознаваний за 10 минут. Подождите немного.' } }), (req, _res, next) => {
+  app.post('/api/recognize', (req, _res, next) => {
     if (!config.apiKey) { next(new UserError('Добавьте OPENROUTER_API_KEY в настройках приложения Coolify.', 503)); return; } next();
   }, upload.single('image'), async (req, res) => {
     if (!req.file) throw new UserError('Выберите фото или PDF с таблицей.');
     const pdf = isPdfUpload(req.file.mimetype, req.file.originalname);
     if (!pdf && !IMAGE_MIMES.includes(req.file.mimetype)) throw new UserError('Поддерживаются PDF, JPG, PNG и WebP.');
-    if (activeRecognitions >= 2) throw new UserError('Сервер уже обрабатывает два документа. Повторите чуть позже.', 429);
-    activeRecognitions++;
-    try {
-      const {recognition} = await registry.models.get();
-      const document = pdf
-        ? await recognizePdf(req.file.buffer, safeFilename(req.file.originalname), config.apiKey, recognition, fetcher)
-        : await recognizeImage(await normalizeImage(req.file.buffer), config.apiKey, recognition, fetcher);
-      if (!document.tables.length) throw new UserError(document.warnings[0] || 'В документе не найдено таблиц.', 422);
-      const input = exportSchema.parse({ documents: [{ name: safeFilename(req.file.originalname), document }] });
-      const result = await exportExcel(input);
-      const record = await history.save(req.file.buffer, result, req.file.originalname, pdf ? 'application/pdf' : req.file.mimetype,
-        document.tables.reduce((n, table) => n + table.rows.length, 0), document.warnings.length + document.tables.reduce((n, table) => n + table.uncertainCells.length, 0));
-      res.json({ document, conversion: record });
-    } finally { activeRecognitions--; }
+    const {recognition} = await registry.models.get();
+    const document = pdf
+      ? await recognizePdf(req.file.buffer, safeFilename(req.file.originalname), config.apiKey, recognition, fetcher)
+      : await recognizeImage(await normalizeImage(req.file.buffer), config.apiKey, recognition, fetcher);
+    if (!document.tables.length) throw new UserError(document.warnings[0] || 'В документе не найдено таблиц.', 422);
+    const input = exportSchema.parse({ documents: [{ name: safeFilename(req.file.originalname), document }] });
+    const result = await exportExcel(input);
+    const record = await history.save(req.file.buffer, result, req.file.originalname, pdf ? 'application/pdf' : req.file.mimetype,
+      document.tables.reduce((n, table) => n + table.rows.length, 0), document.warnings.length + document.tables.reduce((n, table) => n + table.uncertainCells.length, 0));
+    res.json({ document, conversion: record });
   });
   app.get('/api/registry', async (_req, res) => { await registry.ready; res.json({ items: registry.list() }); });
-  app.post('/api/registry', rateLimit({ windowMs: 10 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Слишком много загрузок. Повторите через 10 минут.' } }), registryUpload.single('pdf'), async (req, res) => {
+  app.post('/api/registry', registryUpload.single('pdf'), async (req, res) => {
     if (!req.file) throw new UserError('Выберите PDF с документами.');
     try {
       if (!isPdfUpload(req.file.mimetype, req.file.originalname)) throw new UserError('Для реестра нужен PDF.');
@@ -128,7 +130,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
     res.download(await registry.downloadPath(job), job.resultName, { dotfiles: 'allow' }, error => { if (error && !res.headersSent) next(new UserError('Файл не найден.', 404)); });
   });
   app.post('/api/registry/:id/retry', async (req, res) => { res.json({ job: await registry.retry(String(req.params.id)) }); });
-  app.post('/api/registry/:id/reprocess', rateLimit({ windowMs: 10 * 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Слишком много повторных обработок. Повторите через 10 минут.' } }), async (req, res) => { res.status(202).json({ job: await registry.reprocess(String(req.params.id)) }); });
+  app.post('/api/registry/:id/reprocess', async (req, res) => { res.status(202).json({ job: await registry.reprocess(String(req.params.id)) }); });
   app.delete('/api/registry/:id', async (req, res) => {
     if (!await registry.delete(String(req.params.id))) throw new UserError('Реестр не найден.', 404);
     await history.forgetFile(String(req.params.id));
@@ -151,13 +153,6 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
     if (!await history.delete(String(req.params.id))) throw new UserError('Конвертация не найдена.', 404);
     res.json({ ok: true });
   });
-  app.post('/api/export', rateLimit({ windowMs: 60_000, limit: 20, message: { error: 'Слишком много скачиваний. Повторите через минуту.' } }), async (req, res) => {
-    const input = exportSchema.safeParse(req.body);
-    if (!input.success) throw new UserError('Таблица пуста, повреждена или превышает лимит 50 000 ячеек.');
-    const buffer = await exportExcel(input.data);
-    res.set({ 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Disposition': 'attachment; filename="document.xlsx"', 'Content-Length': String(buffer.length) });
-    res.send(buffer);
-  });
   app.use('/api', (_req, res) => { res.status(404).json({ error: 'Страница API не найдена.' }); });
   const client = path.resolve(process.cwd(), 'dist/client');
   // A missing bundle must be a real 404, never the SPA's HTML with a 200 status.
@@ -165,7 +160,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
   app.use(express.static(client, { maxAge: 0, index: false, setHeaders: res => { res.set('Cache-Control', 'no-cache'); } }));
   app.get('/{*splat}', (_req, res) => { res.set('Cache-Control', 'no-cache').sendFile(path.join(client, 'index.html')); });
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    if (error instanceof multer.MulterError) { res.status(400).json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'Файл слишком большой. Максимальный размер — 12 МБ.' : 'Загрузите один файл без дополнительных полей.' }); return; }
+    if (error instanceof multer.MulterError) { res.status(400).json({ error: 'Загрузите один файл без дополнительных полей.' }); return; }
     if (error instanceof UserError) { res.status(error.status).json({ error: error.message }); return; }
     if (error instanceof SyntaxError || (error instanceof Error && 'status' in error && error.status === 413)) { res.status(400).json({ error: 'Некорректный или слишком большой запрос.' }); return; }
     // Never log request bodies, model responses, images, credentials or upstream errors.

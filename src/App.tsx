@@ -1,16 +1,16 @@
 import { statusLabels } from './lists/status';
 import { RecordList, GroupTitle } from './lists/RecordList';
 import { lazy, Suspense } from 'react';
-import { AppShell, type Page } from './AppShell';
+import { AppShell, routes, type Page } from './AppShell';
 import { useEffect, useRef, useState, type DragEvent, type FormEvent } from 'react';
 import { Check, Download, FileImage, FileText, FileSpreadsheet, LoaderCircle, RotateCcw, Trash2, Upload, X } from 'lucide-react';
 import type { HistoryEntry } from '../shared/history';
-import { FILE_ACCEPT, IMAGE_MIMES, MAX_FILE_BYTES, MAX_PDF_PAGES, isPdfUpload } from '../shared/upload';
+import { FILE_ACCEPT, IMAGE_MIMES, isPdfUpload } from '../shared/upload';
 import { RegistryPage } from './RegistryPage';
 
 type Job = { id: string; file: File; status: 'queued' | 'working' | 'done' | 'error'; result?: HistoryEntry; error?: string };
 const Projects = lazy(() => import('./construction/Projects').then(m => ({ default: m.Projects })));
-const currentPage = (): Page => ({ '/history': 'history', '/registry': 'registry', '/projects': 'projects' } as Record<string, Page>)[location.pathname] || 'convert';
+const currentPage = (): Page => routes.find(route => route.path === location.pathname)?.page ?? 'registry';
 let nextJobId = 0;
 export function App() {
   const [auth, setAuth] = useState<boolean | null>(null);
@@ -68,13 +68,13 @@ export function App() {
     })();
   }, [jobs, auth]);
   useEffect(() => { if (auth && page === 'history') loadHistory(); }, [auth, page, busy]);
-  function navigate(next: Page) {
-    if (next === 'projects' && page === next && location.search) {
-      window.history.pushState(null, '', '/projects');
-      window.dispatchEvent(new PopStateEvent('popstate'));
-      return;
-    }
-    if (next !== page) { window.history.pushState(null, '', next === 'convert' ? '/' : '/'+next); setPage(next); setError(''); } }
+  function navigate(next: Page, search = '') {
+    const path = routes.find(route => route.page === next)!.path + search;
+    if (location.pathname + location.search === path) return;
+    window.history.pushState(null, '', path);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    setError('');
+  }
   async function login(event: FormEvent) {
     event.preventDefault(); setLoggingIn(true); setError('');
     try { await request('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) }); setPassword(''); setAuth(true); }
@@ -84,9 +84,8 @@ export function App() {
   function addFiles(files: FileList | File[]) {
     const added: Job[] = [], errors: string[] = [];
     for (const file of Array.from(files)) {
-      if (jobs.length + added.length >= 10) { errors.push('До 10 файлов за раз. Очистите список, чтобы добавить новые.'); break; }
       if (!IMAGE_MIMES.includes(file.type) && !isPdfUpload(file.type, file.name)) { errors.push(`${file.name}: нужен PDF, JPG, PNG или WebP.`); continue; }
-      if (file.size > MAX_FILE_BYTES || !file.size) { errors.push(`${file.name}: допустимый размер — до 12 МБ.`); continue; }
+      if (!file.size) { errors.push(`${file.name}: файл пуст.`); continue; }
       // This ID only identifies a local queue item; server records use their own UUIDs.
       added.push({ id: `job-${++nextJobId}`, file, status: 'queued' });
     }
@@ -123,12 +122,12 @@ export function App() {
   const notice = error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="Закрыть сообщение" onClick={() => setError('')}><X size={16} /></button></div>;
   if (page === 'projects') return <Suspense fallback={<p>Загрузка проектов…</p>}><Projects shell={shell} notice={notice}/></Suspense>;
   return <AppShell {...shell}><div className={page === 'registry' ? 'workspace-app' : 'utilities-page'}>{notice}
-    {page === 'convert' ? <><input className="visually-hidden" type="file" ref={input} accept={FILE_ACCEPT} multiple aria-label="Выбрать файлы" onChange={e => e.target.files && addFiles(e.target.files)} /><section className={`dropzone ${dragging ? 'dragging' : ''}`} onDragOver={e => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={drop} aria-label="Загрузка файлов"><Upload size={28} strokeWidth={1.4} /><h1>Перетащите файлы сюда</h1><button className="button" onClick={() => input.current?.click()} disabled={jobs.length >= 10}>Выбрать файлы</button><p>PDF (до {MAX_PDF_PAGES} стр.), JPG, PNG, WebP · до 12 МБ</p></section>
+    {page === 'convert' ? <><input className="visually-hidden" type="file" ref={input} accept={FILE_ACCEPT} multiple aria-label="Выбрать файлы" onChange={e => e.target.files && addFiles(e.target.files)} /><section className={`dropzone ${dragging ? 'dragging' : ''}`} onDragOver={e => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={drop} aria-label="Загрузка файлов"><Upload size={28} strokeWidth={1.4} /><h1>Перетащите файлы сюда</h1><button className="button" onClick={() => input.current?.click()}>Выбрать файлы</button><p>PDF, JPG, PNG, WebP</p></section>
         {jobs.length > 0 && <section className="jobs" aria-label="Конвертация файлов"><div className="list-heading"><span>Файлы <span className="muted">{jobs.length}</span></span><button className="text-button" disabled={busy} onClick={() => setJobs([])}>Очистить список</button></div><RecordList scope="converter.queue" rows={jobs} columns={[
       {key:'status',label:'Статус',value:j=>statusLabels[j.status]}, {key:'name',label:'Файл',value:j=>j.file.name},
       {key:'format',label:'Формат',value:j=>j.file.name.split('.').pop()?.toUpperCase()}
     ]}>{groups=>groups.map(group=><section key={group.key}><GroupTitle group={group}/>{group.rows.map(job => <div className="job" key={job.id}>{isPdfUpload(job.file.type, job.file.name) ? <FileText className="file-icon" size={22} strokeWidth={1.5} /> : <FileImage className="file-icon" size={22} strokeWidth={1.5} />}<div className="job-body"><div className="job-name" title={job.file.name}>{job.file.name}</div><div className={`job-status ${job.status === 'error' ? 'error-text' : ''}`} aria-live="polite">{job.status === 'queued' ? 'В очереди' : job.status === 'working' ? 'Обрабатывается…' : job.status === 'done' ? <><Check size={12} />{job.result?.resultName}</> : job.error}</div><div className={`progress ${job.status}`} role="progressbar" aria-label={`Конвертация ${job.file.name}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={job.status === 'done' ? 100 : job.status === 'queued' ? 0 : undefined} aria-valuetext={job.status === 'working' ? 'Обрабатывается' : undefined}><span /></div></div><div className="job-action">{job.status === 'done' && job.result ? <button className="button compact" onClick={() => download(job.result!)} disabled={downloading === `${job.result.id}:result`}>{downloading === `${job.result.id}:result` ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}Скачать</button> : job.status === 'error' ? <button className="icon-button" title="Повторить" aria-label={`Повторить ${job.file.name}`} onClick={() => setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'queued', error: undefined } : j))}><RotateCcw size={17} /></button> : job.status === 'working' ? <LoaderCircle className="spin muted" size={17} /> : <button className="icon-button" aria-label={`Убрать ${job.file.name}`} onClick={() => setJobs(prev => prev.filter(j => j.id !== job.id))}><X size={16} /></button>}</div></div>)}</section>)}</RecordList></section>}</>
-      : page === 'registry' ? <RegistryPage /> : <section className="history"><div className="history-heading"><h1>История</h1>{loading && <LoaderCircle className="spin muted" size={16} />}</div><RecordList scope="converter.history" rows={history} columns={[
+      : page === 'registry' ? <RegistryPage importExcel={() => navigate('projects', '?import=excel')} /> : <section className="history"><div className="history-heading"><h1>История</h1>{loading && <LoaderCircle className="spin muted" size={16} />}</div><RecordList scope="converter.history" rows={history} columns={[
     {key:'format',label:'Формат',value:r=>r.originalMime.split('/').pop()?.toUpperCase()}, {key:'name',label:'Исходник',value:r=>r.originalName},
     {key:'result',label:'Результат',value:r=>r.resultName}, {key:'date',label:'Дата',value:r=>r.createdAt.slice(0,10)},
     {key:'rows',label:'Число строк',value:r=>r.rowCount}, {key:'warnings',label:'Замечания',value:r=>r.warningCount}
