@@ -70,8 +70,10 @@ export async function exportExcel(input: z.infer<typeof exportSchema>): Promise<
         });
       }
       table.columns.forEach((name, i) => {
-        const lengths = table.rows.map(row => Math.max(...row[i].split('\n').map(line => line.length)));
-        const length = Math.max(name.length, ...lengths, 8);
+        let length = Math.max(name.length, 8);
+        for (const row of table.rows) {
+          for (const line of row[i].split('\n')) length = Math.max(length, line.length);
+        }
         sheet.getColumn(i + 1).width = Math.min(52, Math.max(12, length * 0.8 + 3));
       });
       sheet.views = [{ state: 'frozen', ySplit: header.number }];

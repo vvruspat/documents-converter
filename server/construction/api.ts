@@ -59,7 +59,7 @@ class ProjectsController {
   @UseInterceptors(
     FileFieldsInterceptor(
       ['file', ...Object.keys(formTypes)].map((name) => ({ name, maxCount: 1 })),
-      { limits: { fileSize: 24 * 1024 * 1024, files: 4, fields: 2 } },
+      { limits: { files: 4, fields: 2 } },
     ),
   )
   async import(@UploadedFiles() files: Record<string, Express.Multer.File[]>, @Body() body: Record<string, unknown>) {

@@ -639,7 +639,10 @@ export function Projects({ shell, notice }: { shell: ShellProps; notice: ReactNo
   }
   useEffect(() => {
     const sync = () => {
-      const id = new URLSearchParams(location.search).get('project');
+      if (location.pathname !== '/projects') return;
+      const params = new URLSearchParams(location.search);
+      setMode(params.get('import') === 'excel' ? 'import' : undefined);
+      const id = params.get('project');
       if (id && /^[0-9a-f-]{36}$/i.test(id)) {
         void open(id);
         void api('')
@@ -777,7 +780,10 @@ export function Projects({ shell, notice }: { shell: ShellProps; notice: ReactNo
         {mode && (
           <ProjectStart
             mode={mode}
-            close={() => setMode(undefined)}
+            close={() => {
+              setMode(undefined);
+              if (new URLSearchParams(location.search).has('import')) history.replaceState(null, '', '/projects');
+            }}
             created={(p, w) => {
               setMode(undefined);
               history.pushState(null, '', '/projects?project=' + encodeURIComponent(p.id));
