@@ -12,7 +12,7 @@ import { scanPage, savePageText, saveDocument } from './scan.js';
 import { fieldLabels, type Field } from '../shared/scan.js';
 import { z } from 'zod';
 import { fieldsToReview, unreadableText, kinds, type CatalogRow } from '../shared/catalog.js';
-import { documentsFromPages, extractDocument, transcribe, sourceText } from './document-register.js';
+import { documentsFromPages, extractDocument, transcribe, sourceText, parseModelReply, ModelContentError } from './document-register.js';
 import { safeFilename, type ConversionStore } from './history.js';
 import { UserError } from './recognize.js';
 
@@ -49,10 +49,11 @@ const pageSchema = z.object({
   continuation: continuationSchema.optional(),
   documents: z.array(documentSchema),
 }).strict();
-type PageResult = z.infer<typeof pageSchema>;
+const storedPageSchema = pageSchema.extend({ reviewReason: z.string().optional() });
+type PageResult = z.infer<typeof storedPageSchema>;
 export type RegistryJob = {
   id: string; project?: string; pipeline?: 'document'; documentsTotal?: number; models?: {recognition: string; regions: string; chat?: string}; originalName: string; resultName: string; status: 'queued' | 'working' | 'done' | 'error';
-  pages: number; processedPages: number; recordCount: number; createdAt: string; error?: string;
+  pages: number; processedPages: number; reviewPageCount?: number; recordCount: number; createdAt: string; error?: string;
 };
 type RegistryRow = { name: string; number: string; date: string; organization: string; first: number; last: number; uncertain: boolean; reviewFields: Field[] };
 
@@ -112,8 +113,8 @@ async function pdfPages(filename: string): Promise<number> {
   }
 }
 
-async function recognizePage(image: Buffer, page: number, previous: string, apiKey: string, model: string, fetcher: typeof fetch): Promise<PageResult> {
-  for (let attempt = 0; attempt < 4; attempt++) {
+async function recognizePage(image: Buffer, page: number, previous: string, apiKey: string, model: string, fetcher: typeof fetch, retries: number): Promise<PageResult> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const response = await fetcher('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -136,17 +137,13 @@ async function recognizePage(image: Buffer, page: number, previous: string, apiK
         if (response.status === 429 || response.status >= 500) throw new Error(`Transient HTTP ${response.status}`);
         throw new UserError(`Модель не смогла обработать страницу ${page}.`, 502);
       }
-      const body = await response.json() as { choices?: { finish_reason?: string; message?: { content?: string; refusal?: string } }[] };
-      const choice = body.choices?.[0];
-      if (choice?.finish_reason === 'length') {
-        throw new UserError(`Модель достигла предела длины ответа при распознавании страницы ${page}.`, 502);
-      }
-      if (!choice?.message?.content || choice.message.refusal) throw new Error('Incomplete model response');
-      const parsed = JSON.parse(choice.message.content.replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, ''));
-      return pageSchema.parse(parsed);
+      return parseModelReply(await response.json(), pageSchema);
     } catch (error) {
       if (error instanceof UserError) throw error;
-      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** attempt));
+      if (attempt === retries && error instanceof ModelContentError) {
+        return { blank: false, continuesPrevious: false, documents: [], reviewReason: error.message };
+      }
+      if (attempt < retries) await new Promise(resolve => setTimeout(resolve, 5000 * 2 ** attempt));
     }
   }
   throw new UserError(`Не удалось распознать страницу ${page}. Попробуйте продолжить обработку позже.`, 502);
@@ -154,10 +151,12 @@ async function recognizePage(image: Buffer, page: number, previous: string, apiK
 
 export function registryRows(pages: PageResult[]): RegistryRow[] {
   const rows: RegistryRow[] = [];
+  let firstRowAfterGap = 0;
   for (const [index, result] of pages.entries()) {
     const page = index + 1;
+    if (result.reviewReason) { firstRowAfterGap = rows.length; continue; }
     if (result.blank && !result.documents.length && !result.continuesPrevious) continue;
-    if (result.continuesPrevious && rows.length) {
+    if (result.continuesPrevious && rows.length > firstRowAfterGap) {
       const previous = rows[rows.length - 1];
       if (!result.documents.length || result.documents.every(doc => !doc.attachmentOfPrevious)) previous.last = page;
       if (result.continuation) {
@@ -177,7 +176,7 @@ export function registryRows(pages: PageResult[]): RegistryRow[] {
     }
     for (const document of result.documents) {
       const name = document.name.trim() || 'Документ — требуется проверка';
-      const parent = document.attachmentOfPrevious ? rows.at(-1) : undefined;
+      const parent = document.attachmentOfPrevious && rows.length > firstRowAfterGap ? rows.at(-1) : undefined;
       const number = document.number.trim() === parent?.number ? '' : document.number.trim();
       const reported = [...(document.reviewFields ?? [])];
       const inherited = (key: 'date' | 'organization') => {
@@ -199,7 +198,8 @@ export function registryRows(pages: PageResult[]): RegistryRow[] {
   return rows;
 }
 
-async function writeRegistry(filename: string, sourceName: string, pages: {object?: string; section?: string}[], rows: CatalogRow[] | RegistryRow[]): Promise<number> {
+async function writeRegistry(filename: string, sourceName: string, pages: {object?: string; section?: string; reviewReason?: string}[], rows: CatalogRow[] | RegistryRow[]): Promise<number> {
+  const reviews = pages.flatMap((page, i) => page.reviewReason ? [{ page: i + 1, reason: page.reviewReason }] : []);
   const object = pages.find(page => page.object?.trim())?.object?.trim();
   const section = pages.find(page => page.section?.trim())?.section?.trim();
   const book = new ExcelJS.stream.xlsx.WorkbookWriter({ filename, useStyles: true });
@@ -222,6 +222,10 @@ async function writeRegistry(filename: string, sourceName: string, pages: {objec
     sheet.getCell('B1').value = object ? `Объект: ${object}` : `Объект: см. исходный PDF «${sourceName}»`;
     sheet.getCell('B2').value = `Источник: ${sourceName}. Листы «с/по» — страницы PDF.`;
     sheet.getCell('B3').value = 'РЕЕСТР ДОКУМЕНТОВ';
+    if (reviews.length) {
+      sheet.getCell('B4').value = 'Страниц для проверки: ' + reviews.length + '. См. лист «Страницы для проверки».';
+      sheet.getCell('B4').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF0C2' } };
+    }
     sheet.getCell('A5').value = '№п/п';
     sheet.getCell('B5').value = 'Наименование актов освидетельствования (геодезических, скрываемых работ, конструкций, участков сетей), видов испытаний, материалов';
     sheet.getCell('C5').value = '№ чертежа, акта, разрешения, журнала работ и др.';
@@ -262,6 +266,16 @@ async function writeRegistry(filename: string, sourceName: string, pages: {objec
     line.commit(); sheetRows++;
   }
   sheet?.commit();
+  if (reviews.length) {
+    const review = book.addWorksheet('Страницы для проверки', { views: [{ state: 'frozen', ySplit: 1 }] });
+    review.columns = [{ header: 'Страница PDF', width: 18 }, { header: 'Причина', width: 80 }, { header: 'Что проверить', width: 80 }];
+    review.getRow(1).font = { bold: true };
+    review.getRow(1).commit();
+    for (const item of reviews) {
+      review.addRow([item.page, item.reason, 'Сверьте страницу с оригиналом и при необходимости дополните реестр.']).commit();
+    }
+    review.commit();
+  }
   await book.commit();
   return rows.length;
 }
@@ -339,7 +353,7 @@ export class RegistryQueue {
   }
   async evidence(id: string, page: number, document: number, index: number) {
     if (this.get(id)?.pipeline === 'document') return (await this.options.store!.documentFields(id)).get(index)?.evidence.filter(e => e.page === page) ?? [];
-    const result = pageSchema.parse(JSON.parse(await readFile(path.join(this.jobDir(id),'pages',page + '.json'),'utf8')));
+    const result = storedPageSchema.parse(JSON.parse(await readFile(path.join(this.jobDir(id),'pages',page + '.json'),'utf8')));
     return (result.evidence ?? []).filter(e => e.document === document);
   }
   async excerpt(id: string, first: number, last: number, index: number) {
@@ -366,7 +380,7 @@ export class RegistryQueue {
   private async savedPages(job: RegistryJob) {
     const pages: PageResult[] = [];
     for (let i = 1; i <= job.pages; i++) {
-      pages.push(pageSchema.parse(JSON.parse(await readFile(path.join(this.jobDir(job.id), 'pages', i + '.json'), 'utf8'))));
+      pages.push(storedPageSchema.parse(JSON.parse(await readFile(path.join(this.jobDir(job.id), 'pages', i + '.json'), 'utf8'))));
     }
     return pages;
   }
@@ -511,11 +525,13 @@ export class RegistryQueue {
     const reader = { apiKey: this.options.apiKey, fetcher: this.fetchModel };
     const saved = new Map((await db.transcripts(job.id)).map(page => [page.page, page]));
     let previous = '';
+    let reviewPageCount = 0;
     for (let page = 1; page <= job.pages; page++) {
       let data = saved.get(page);
       if (!data) {
         const scan = await scanPage(dir, page);
-        const transcript = await transcribe({ ...reader, model: models.recognition }, await readFile(scan.image), page, previous);
+        const { regionRetries: pageRetries } = await this.models.get();
+        const transcript = await transcribe({ ...reader, model: models.recognition, pageRetries }, await readFile(scan.image), page, previous);
         await db.saveTranscript(job.id, page, transcript);
         data = { page, transcript, readings: null };
       }
@@ -523,6 +539,10 @@ export class RegistryQueue {
         const { regionRetries } = await this.models.get();
         const readings = await readPageRegions(dir, page, data.transcript.regions, { ...reader, model: models.regions, regionRetries }, models.recognition, true);
         await db.saveReadings(job.id, page, readings);
+      }
+      if (data.transcript.reviewReason) {
+        previous = '';
+        job.reviewPageCount = ++reviewPageCount;
       }
       const started = data.transcript.documents.at(-1);
       if (started) previous = started.title || started.text.slice(0, 200) || 'Документ';
@@ -556,14 +576,16 @@ export class RegistryQueue {
     const dir = this.jobDir(job.id);
     const pages: PageResult[] = [];
     let previous = '';
+    let reviewPageCount = 0;
     for (let page = 1; page <= job.pages; page++) {
       const file = path.join(dir, 'pages', `${page}.json`);
       let result: PageResult;
-      try { result = pageSchema.parse(JSON.parse(await readFile(file, 'utf8'))); }
+      try { result = storedPageSchema.parse(JSON.parse(await readFile(file, 'utf8'))); }
       catch {
         const scan = await scanPage(dir,page);
         const image = await readFile(scan.image);
-        result = await recognizePage(image, page, previous, this.options.apiKey, job.models!.recognition, this.fetchModel);
+        const { regionRetries: pageRetries } = await this.models.get();
+        result = await recognizePage(image, page, previous, this.options.apiKey, job.models!.recognition, this.fetchModel, pageRetries);
         const quotes = [...new Set(result.evidence?.map(item => item.quote).filter(Boolean))];
         if (quotes.length) await savePageText(dir, page, quotes.join('\n'));
         const temp = `${file}.${randomUUID()}.tmp`;
@@ -575,6 +597,10 @@ export class RegistryQueue {
       const { regionRetries } = await this.models.get();
       await readPageRegions(dir, page, regions, { ...this.options, regionRetries, fetcher: this.fetchModel, model: job.models!.regions }, job.models!.recognition);
       pages.push(result);
+      if (result.reviewReason) {
+        previous = '';
+        job.reviewPageCount = ++reviewPageCount;
+      }
       const latest = result.documents.at(-1);
       if (latest) previous = [latest.name, latest.number].filter(Boolean).join(' ');
       job.processedPages = page;
