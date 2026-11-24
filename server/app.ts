@@ -107,7 +107,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
       document.tables.reduce((n, table) => n + table.rows.length, 0), document.warnings.length + document.tables.reduce((n, table) => n + table.uncertainCells.length, 0));
     res.json({ document, conversion: record });
   });
-  app.get('/api/registry', async (_req, res) => { await registry.ready; res.json({ items: registry.list() }); });
+  app.get('/api/registry', async (_req, res) => { await registry.ready; res.json({ items: registry.list(), stats: registry.stats() }); });
   app.post('/api/registry', registryUpload.single('pdf'), async (req, res) => {
     if (!req.file) throw new UserError('Выберите PDF с документами.');
     try {
