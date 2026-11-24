@@ -196,9 +196,9 @@ test('creates a register from scanned PDF pages and persists the completed resul
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test('restores two PDFs at a time and refills the free slot after errors and successes', async t => {
+test('restores four PDFs at a time and refills the free slot after errors and successes', async t => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'registry-concurrency-'));
-  const names = ['slow', 'failed', 'third', 'fourth'];
+  const names = ['slow-a', 'slow-b', 'slow-c', 'failed', 'fifth', 'sixth'];
   const ids = names.map(() => randomUUID());
   const pdf = await PDFDocument.create();
   pdf.addPage();
@@ -210,12 +210,12 @@ test('restores two PDFs at a time and refills the free slot after errors and suc
   const fetcher: typeof fetch = async (_url, init) => {
     const { model } = JSON.parse(String(init?.body));
     calls.push(model);
-    if (model === 'slow') await slow.promise;
+    if (model.startsWith('slow-')) await slow.promise;
     if (model === 'failed') {
       await failed.promise;
       return new Response(null, { status: 402 });
     }
-    if (model === 'third' && !limited) {
+    if (model === 'fifth' && !limited) {
       limited = true;
       return new Response(null, { status: 429 });
     }
@@ -237,16 +237,16 @@ test('restores two PDFs at a time and refills the free slot after errors and suc
     }
     const restored = queue = new RegistryQueue({ directory, apiKey: 'test', model: 'test', fetcher });
     await restored.ready;
-    await t.waitFor(() => assert.ok(calls.length >= 2), { timeout: 30_000 });
-    assert.deepEqual([...calls].sort(), ['failed', 'slow']);
-    assert.deepEqual(ids.map(id => restored.get(id)?.status), ['working', 'working', 'queued', 'queued']);
+    await t.waitFor(() => assert.ok(calls.length >= 4), { timeout: 30_000 });
+    assert.deepEqual([...calls].sort(), ['failed', 'slow-a', 'slow-b', 'slow-c']);
+    assert.deepEqual(ids.map(id => restored.get(id)?.status), ['working', 'working', 'working', 'working', 'queued', 'queued']);
     failed.resolve();
-    assert.equal((await waitForJob(restored, ids[3])).status, 'done');
-    assert.deepEqual(ids.map(id => restored.get(id)?.status), ['working', 'error', 'done', 'done']);
-    assert.deepEqual(calls.slice(2), ['third', 'third', 'fourth']);
+    assert.equal((await waitForJob(restored, ids[5])).status, 'done');
+    assert.deepEqual(ids.map(id => restored.get(id)?.status), ['working', 'working', 'working', 'error', 'done', 'done']);
+    assert.deepEqual(calls.slice(4), ['fifth', 'fifth', 'sixth']);
     slow.resolve();
-    assert.equal((await waitForJob(restored, ids[0])).status, 'done');
-    assert.equal(restored.stats().modelRequests, 5);
+    for (const id of ids.slice(0, 3)) assert.equal((await waitForJob(restored, id)).status, 'done');
+    assert.equal(restored.stats().modelRequests, 7);
     assert.equal(restored.stats().rateLimitedRequests, 1);
   } finally {
     slow.resolve();
