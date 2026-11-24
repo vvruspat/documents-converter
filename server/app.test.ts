@@ -503,7 +503,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   const models = { recognition: 'test/reader', regions: 'test/detail', chat: 'test/archive' };
   const order: string[] = [];
   let failSecond = true, failCrop = true;
-  let jobId = '', sealCalls = 0;
+  let jobId = '', sealCalls = 0, cropCalls = 0;
   const answer = (result: unknown) => Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }] });
   const fetcher: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body));
@@ -529,7 +529,10 @@ test('archives complete owned transcriptions before chat extraction and resumes 
         sealCalls++;
         return answer({text:'Builder',status:'read'});
       }
-      return failCrop ? new Response('', {status:503}) : answer({text:'Act No. 000017',status:'read'});
+      cropCalls++;
+      if (failCrop) return new Response('', {status:503});
+      if (cropCalls === 4) return new Response('', {status:429, headers: {'Retry-After':'0'}});
+      return answer({text:'Act No. 000017',status:'read'});
     }
     assert.equal(body.model, models.chat);
     const saved = await store.transcripts(jobId);
@@ -566,12 +569,14 @@ test('archives complete owned transcriptions before chat extraction and resumes 
     } while (Date.now()<end);
     assert.fail('Timed out waiting for '+status);
   }
-  assert.match((await wait('error')).error, /фрагмент страницы 1/);
+  assert.match((await wait('error')).error, /фрагмент страницы 1 — OpenRouter HTTP 503/);
+  assert.equal(cropCalls, 3);
   assert.equal((await store.transcripts(jobId))[0].readings,null);
   failCrop = false;
   await request(app).post('/api/registry/'+jobId+'/retry').expect(200);
   assert.equal((await wait('error')).recordCount,1);
   assert.equal(sealCalls,1);
+  assert.equal(cropCalls,5);
   assert.deepEqual((await store.transcripts(jobId))[0].readings?.map(r => r.kind), ['handwriting','seal','stamp']);
   const stamp = (await store.transcripts(jobId))[0].readings!.at(-1)!;
   assert.deepEqual([stamp.text,stamp.method,stamp.model], ['КОПИЯ ВЕРНА','page',models.recognition]);
@@ -581,7 +586,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   await request(app).post('/api/registry/'+jobId+'/retry').expect(200);
   assert.equal((await wait('done')).recordCount,2);
   assert.deepEqual(order, [...failedCalls,models.chat]);
-  assert.deepEqual(failedCalls,[models.recognition,models.regions,models.regions,models.regions,models.recognition,models.chat,models.chat]);
+  assert.deepEqual(failedCalls,[models.recognition,...Array(6).fill(models.regions),models.recognition,models.chat,models.chat]);
   const entries = await store.documentFields(jobId);
   assert.deepEqual([...entries.values()].map(e=>[e.row.number,e.row.first,e.row.last]),[['000017',1,2],['C-15',2,2]]);
   const catalog = (await request(app).get('/api/catalog').query({project:'Archive'})).body;
@@ -591,14 +596,14 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   const book = new ExcelJS.Workbook(); await book.xlsx.readFile(xlsx);
   assert.equal(book.worksheets[0].getCell('C8').value, '000017');
   assert.equal(book.worksheets[0].getCell('C9').value, 'C-15');
-  assert.equal(order.length,8);
+  assert.equal(order.length,11);
   const preview = await request(app).get('/api/registry/'+jobId+'/documents/0/image?page=1&region='+stamp.id).expect(200);
   assert.match(preview.headers['content-type'],/image\/png/);
   await request(app).put('/api/settings/models').send({...models,regions:models.recognition}).expect(200);
   const verified = await request(app).post('/api/registry/'+jobId+'/documents/0/regions?page=1').send(stamp).expect(200);
   assert.equal(verified.body.region.method,'crop');
   assert.equal(verified.body.region.previous[0].method,'page');
-  assert.equal(order.length,9);
+  assert.equal(order.length,12);
   await request(app).delete('/api/registry/'+jobId).expect(200);
   assert.equal((await store.transcripts(jobId)).length,0);
   assert.equal((await store.documentFields(jobId)).size,0);
