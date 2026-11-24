@@ -88,8 +88,9 @@ export function installCatalog(app: Express, queue: RegistryQueue, db: Conversio
     const {page,ordinal} = documentPage(req, source);
     const parsed = regionBox.safeParse(req.body);
     if (!parsed.success) throw new UserError('Выделите область внутри листа.');
+    const { regions, regionRetries } = await queue.models.get();
     const region = await recognizeRegion(source.dir,page,ordinal,parsed.data,'manual',{
-      apiKey:config.apiKey, model:(await queue.models.get()).regions, fetcher
+      apiKey:config.apiKey, model:regions, regionRetries, fetcher
     }, true);
     if (source.job.pipeline === 'document') await db.updateRegionReading(source.job.id, page, { ...region, document: ordinal });
     res.json({region});

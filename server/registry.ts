@@ -415,7 +415,8 @@ export class RegistryQueue {
     if (!this.options.apiKey) throw new UserError('Добавьте OPENROUTER_API_KEY в настройках приложения Coolify.', 503);
     const pages = await pdfPages(uploadPath);
     const id = randomUUID(), name = safeFilename(originalName);
-    const models = await this.models.get();
+    const { recognition, regions, chat } = await this.models.get();
+    const models = { recognition, regions, chat };
     const job: RegistryJob = { id, project, models, pipeline: this.options.store ? 'document' : undefined, originalName: name, resultName: `${name.replace(/\.pdf$/i, '') || 'Документ'} — реестр.xlsx`,
       status: 'queued', pages, processedPages: 0, recordCount: 0, createdAt: new Date().toISOString() };
     const dir = this.jobDir(id);
@@ -519,7 +520,8 @@ export class RegistryQueue {
         data = { page, transcript, readings: null };
       }
       if (data.readings === null) {
-        const readings = await readPageRegions(dir, page, data.transcript.regions, { ...reader, model: models.regions }, models.recognition, true);
+        const { regionRetries } = await this.models.get();
+        const readings = await readPageRegions(dir, page, data.transcript.regions, { ...reader, model: models.regions, regionRetries }, models.recognition, true);
         await db.saveReadings(job.id, page, readings);
       }
       const started = data.transcript.documents.at(-1);
@@ -570,7 +572,8 @@ export class RegistryQueue {
       }
       const regions = (result.regions ?? []).filter(region => region.document === -1
         ? result.continuesPrevious && !!previous : region.document < result.documents.length);
-      await readPageRegions(dir, page, regions, { ...this.options, fetcher: this.fetchModel, model: job.models!.regions }, job.models!.recognition);
+      const { regionRetries } = await this.models.get();
+      await readPageRegions(dir, page, regions, { ...this.options, regionRetries, fetcher: this.fetchModel, model: job.models!.regions }, job.models!.recognition);
       pages.push(result);
       const latest = result.documents.at(-1);
       if (latest) previous = [latest.name, latest.number].filter(Boolean).join(' ');

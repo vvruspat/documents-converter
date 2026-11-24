@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Settings, X } from 'lucide-react';
-import type { Models } from '../shared/models';
+import { maxRegionRetries, type Models, type RecognitionSettings } from '../shared/models';
 
 const fields: { key: keyof Models; label: string; hint: string }[] = [
   { key: 'recognition', label: 'Распознавание документов', hint: 'Фото, PDF и постраничный разбор реестров.' },
@@ -29,7 +29,7 @@ export function ModelSettingsButton({ compact = false }: { compact?: boolean }) 
 
 function SettingsDialog({ close }: { close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [values, setValues] = useState<Models>();
+  const [values, setValues] = useState<RecognitionSettings>();
   const [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
     [saved, setSaved] = useState(false);
@@ -115,6 +115,19 @@ function SettingsDialog({ close }: { close: () => void }) {
               </label>
             ))
           : !error && <p>Загружаем настройки…</p>}
+        {values && (
+          <label>
+            Автоповторы OCR фрагмента
+            <input type="number" min={0} max={maxRegionRetries} step={1} required disabled={busy}
+              value={Number.isFinite(values.regionRetries) ? values.regionRetries : ''}
+              onChange={e => {
+                setSaved(false);
+                setValues({ ...values, regionRetries: e.target.valueAsNumber });
+              }}
+            />
+            <small>От 0 до {maxRegionRetries}. При 0 автоповтор отключён. Первая пауза — 5 секунд, каждая следующая вдвое дольше.</small>
+          </label>
+        )}
         {error && (
           <p role="alert" className="error-banner">
             {error}

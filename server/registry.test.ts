@@ -344,7 +344,7 @@ test('reads individual cropped regions, isolates documents sharing a page and re
       const meta = await sharp(bytes).metadata();
       assert.equal(meta.format,'png');
       activeReads--;
-      if (failStamp && body.messages[0].content.includes('stamp imprint')) return new Response('',{status:503});
+      if (failStamp && body.messages[0].content.includes('stamp imprint')) return new Response('',{status:402});
       data = {status:'partial',text:'ООО [неразборчиво]'};
     }
     return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify(data)}}]});

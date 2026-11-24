@@ -16,6 +16,7 @@ export type RegionReading = {
 };
 export type Region = RegionBox & RegionReading & {
   id: string;
+  errorReason?: string;
   source: 'auto' | 'manual';
   previous?: RegionReading[];
   pageReading?: { model: string; text: string; confidence: 'high' | 'medium' | 'low' };
