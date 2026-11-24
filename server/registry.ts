@@ -17,7 +17,7 @@ import { safeFilename, type ConversionStore } from './history.js';
 import { UserError } from './recognize.js';
 
 const run = promisify(execFile);
-const maxConcurrentJobs = 2;
+const maxConcurrentJobs = 4;
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const catalogFields = z.object({
   kind: z.enum(kinds), material: z.string().max(500), batch: z.string().max(200),
