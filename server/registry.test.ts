@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -193,6 +194,66 @@ test('creates a register from scanned PDF pages and persists the completed resul
     assert.equal(requests, 4);
     assert.equal(restarted.get(created.id)?.status, 'done');
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('restores two PDFs at a time and refills the free slot after errors and successes', async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'registry-concurrency-'));
+  const names = ['slow', 'failed', 'third', 'fourth'];
+  const ids = names.map(() => randomUUID());
+  const pdf = await PDFDocument.create();
+  pdf.addPage();
+  const bytes = await pdf.save();
+  const slow = Promise.withResolvers<void>();
+  const failed = Promise.withResolvers<void>();
+  const calls: string[] = [];
+  let limited = false;
+  const fetcher: typeof fetch = async (_url, init) => {
+    const { model } = JSON.parse(String(init?.body));
+    calls.push(model);
+    if (model === 'slow') await slow.promise;
+    if (model === 'failed') {
+      await failed.promise;
+      return new Response(null, { status: 402 });
+    }
+    if (model === 'third' && !limited) {
+      limited = true;
+      return new Response(null, { status: 429 });
+    }
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content:
+      JSON.stringify({ blank: true, continuesPrevious: false, documents: [] }) } }] });
+  };
+
+  let queue: RegistryQueue | undefined;
+  try {
+    for (const [i, id] of ids.entries()) {
+      const dir = path.join(directory, 'registry-jobs', id);
+      await mkdir(path.join(dir, 'pages'), { recursive: true });
+      await writeFile(path.join(dir, 'source.pdf'), bytes);
+      await writeFile(path.join(dir, 'job.json'), JSON.stringify({
+        id, originalName: names[i] + '.pdf', resultName: names[i] + '.xlsx',
+        models: { recognition: names[i], regions: names[i] }, pages: 1, processedPages: 0, recordCount: 0,
+        createdAt: new Date(1000 * i).toISOString(), status: i === 0 ? 'working' : 'queued',
+      }));
+    }
+    const restored = queue = new RegistryQueue({ directory, apiKey: 'test', model: 'test', fetcher });
+    await restored.ready;
+    await t.waitFor(() => assert.ok(calls.length >= 2), { timeout: 30_000 });
+    assert.deepEqual([...calls].sort(), ['failed', 'slow']);
+    assert.deepEqual(ids.map(id => restored.get(id)?.status), ['working', 'working', 'queued', 'queued']);
+    failed.resolve();
+    assert.equal((await waitForJob(restored, ids[3])).status, 'done');
+    assert.deepEqual(ids.map(id => restored.get(id)?.status), ['working', 'error', 'done', 'done']);
+    assert.deepEqual(calls.slice(2), ['third', 'third', 'fourth']);
+    slow.resolve();
+    assert.equal((await waitForJob(restored, ids[0])).status, 'done');
+    assert.equal(restored.stats().modelRequests, 5);
+    assert.equal(restored.stats().rateLimitedRequests, 1);
+  } finally {
+    slow.resolve();
+    failed.resolve();
+    if (queue) await Promise.all(ids.map(id => waitForJob(queue!, id)));
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('retry keeps recognized pages and continues after an upstream error', async () => {

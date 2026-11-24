@@ -17,6 +17,7 @@ import { safeFilename, type ConversionStore } from './history.js';
 import { UserError } from './recognize.js';
 
 const run = promisify(execFile);
+const maxConcurrentJobs = 2;
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const catalogFields = z.object({
   kind: z.enum(kinds), material: z.string().max(500), batch: z.string().max(200),
@@ -271,7 +272,28 @@ export class RegistryQueue {
   readonly ready: Promise<void>;
   private directory: string;
   private jobs = new Map<string, RegistryJob>();
-  private running = false;
+  private waiting = new Set<RegistryJob>();
+  private activeJobs = 0;
+  private modelRequests = 0;
+  private rateLimitedRequests = 0;
+
+  private readonly fetchModel: typeof fetch = async (url, init) => {
+    this.modelRequests++;
+    const response = await (this.options.fetcher ?? fetch)(url, init);
+    if (response.status === 429) this.rateLimitedRequests++;
+    return response;
+  };
+
+  stats() {
+    return {
+      activeJobs: this.activeJobs,
+      maxConcurrentJobs,
+      modelRequests: this.modelRequests,
+      rateLimitedRequests: this.rateLimitedRequests,
+      processRssBytes: process.memoryUsage.rss(),
+    };
+  }
+
   constructor(private options: { directory: string; apiKey: string; model: string; regionModel?: string; store?: ConversionStore; fetcher?: typeof fetch }) {
     this.models = new ModelSettings(options.directory, { recognition: options.model, chat: options.model, regions: options.regionModel || options.model });
     this.directory = path.join(path.resolve(options.directory), 'registry-jobs');
@@ -294,6 +316,7 @@ export class RegistryQueue {
         if (job.id !== item.name) continue;
         if (job.status === 'working') job.status = 'queued';
         this.jobs.set(job.id, job);
+        if (job.status === 'queued') this.waiting.add(job);
       } catch { /* Ignore incomplete upload directories. */ }
     }
     this.schedule();
@@ -401,6 +424,7 @@ export class RegistryQueue {
       await rename(uploadPath, path.join(dir, 'source.pdf'));
       await this.save(job);
       this.jobs.set(id, job);
+      this.waiting.add(job);
       this.schedule();
       return { ...job };
     } catch (error) { await rm(dir, { recursive: true, force: true }); throw error; }
@@ -410,7 +434,18 @@ export class RegistryQueue {
     const job = this.get(id);
     if (!job) throw new UserError('Реестр не найден.', 404);
     if (job.status !== 'error') throw new UserError('Повторить можно только прерванную обработку.', 409);
-    job.status = 'queued'; delete job.error; await this.save(job); this.schedule();
+    const previousError = job.error;
+    job.status = 'queued';
+    delete job.error;
+    try {
+      await this.save(job);
+    } catch (error) {
+      job.status = 'error';
+      job.error = previousError;
+      throw error;
+    }
+    if (this.jobs.has(id)) this.waiting.add(job);
+    this.schedule();
     return { ...job };
   }
   async reprocess(id: string): Promise<RegistryJob> {
@@ -429,33 +464,50 @@ export class RegistryQueue {
     const job = this.get(id);
     if (!job) return false;
     if (job.status === 'working') throw new UserError('Дождитесь завершения обработки перед удалением.', 409);
+    this.waiting.delete(job);
     this.jobs.delete(id);
     await rm(this.jobDir(id), { recursive: true, force: true });
     return true;
   }
-  private schedule() { if (!this.running) queueMicrotask(() => { void this.pump().catch(() => console.error('Registry queue storage failed')); }); }
-  private async pump() {
-    if (this.running) return;
-    const job = [...this.jobs.values()].filter(value => value.status === 'queued').sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
-    if (!job) return;
-    this.running = true;
+  private schedule() {
+    queueMicrotask(() => {
+      const slots = maxConcurrentJobs - this.activeJobs;
+      if (!slots || !this.waiting.size) return;
+      const next = [...this.waiting].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, slots);
+      for (const job of next) {
+        this.waiting.delete(job);
+        this.activeJobs++;
+        job.status = 'working';
+        void this.run(job)
+          .catch(() => console.error('Registry queue storage failed'))
+          .finally(() => { this.activeJobs--; this.schedule(); });
+      }
+    });
+  }
+
+  private async run(job: RegistryJob) {
+    let result: RegistryJob;
     try {
       if (!job.models) job.models = { recognition:this.options.model, regions:this.options.regionModel || this.options.model };
-      job.status = 'working'; await this.save(job);
+      await this.save(job);
       if (job.pipeline === 'document') await this.processDocuments(job);
       else await this.process(job);
-      job.status = 'done'; delete job.error;
+      result = { ...job, status: 'done', error: undefined };
+    } catch (error) {
+      result = { ...job, status: 'error', error: error instanceof UserError ? error.message : 'Не удалось создать реестр. Попробуйте продолжить обработку.' };
+    }
+    try {
+      await this.save(result);
     } catch (error) {
       job.status = 'error';
-      job.error = error instanceof UserError ? error.message : 'Не удалось создать реестр. Попробуйте продолжить обработку.';
-    } finally {
-      try { await this.save(job); }
-      finally { this.running = false; this.schedule(); }
+      job.error = 'Не удалось сохранить состояние реестра. Попробуйте продолжить обработку.';
+      throw error;
     }
+    Object.assign(job, result);
   }
   private async processDocuments(job: RegistryJob) {
     const db = this.options.store!, dir = this.jobDir(job.id), models = job.models!;
-    const reader = { apiKey: this.options.apiKey, fetcher: this.options.fetcher };
+    const reader = { apiKey: this.options.apiKey, fetcher: this.fetchModel };
     const saved = new Map((await db.transcripts(job.id)).map(page => [page.page, page]));
     let previous = '';
     for (let page = 1; page <= job.pages; page++) {
@@ -509,7 +561,7 @@ export class RegistryQueue {
       catch {
         const scan = await scanPage(dir,page);
         const image = await readFile(scan.image);
-        result = await recognizePage(image, page, previous, this.options.apiKey, job.models!.recognition, this.options.fetcher ?? fetch);
+        result = await recognizePage(image, page, previous, this.options.apiKey, job.models!.recognition, this.fetchModel);
         const quotes = [...new Set(result.evidence?.map(item => item.quote).filter(Boolean))];
         if (quotes.length) await savePageText(dir, page, quotes.join('\n'));
         const temp = `${file}.${randomUUID()}.tmp`;
@@ -518,7 +570,7 @@ export class RegistryQueue {
       }
       const regions = (result.regions ?? []).filter(region => region.document === -1
         ? result.continuesPrevious && !!previous : region.document < result.documents.length);
-      await readPageRegions(dir, page, regions, { ...this.options, model: job.models!.regions }, job.models!.recognition);
+      await readPageRegions(dir, page, regions, { ...this.options, fetcher: this.fetchModel, model: job.models!.regions }, job.models!.recognition);
       pages.push(result);
       const latest = result.documents.at(-1);
       if (latest) previous = [latest.name, latest.number].filter(Boolean).join(' ');
