@@ -450,9 +450,16 @@ test('indexes old jobs, groups matching sources and resolves a kit when its docu
   await request(app).get('/api/settings/models').expect(401);
   await request(app).put('/api/settings/models').send(models).expect(401);
   await request(app).put('/api/settings/models').set('Cookie',cookie()).send({...models,chat:'invalid model'}).expect(400);
-  await request(app).put('/api/settings/models').set('Cookie',cookie()).send(models).expect(200);
+  const modelSettings = request(app);
+  await modelSettings.put('/api/settings/models').set('Cookie',cookie()).send({...models,regionRetries:-1}).expect(400);
+  await modelSettings.put('/api/settings/models').set('Cookie',cookie()).send({...models,regionRetries:7}).expect(400);
+  await modelSettings.put('/api/settings/models').set('Cookie',cookie()).send({...models,regionRetries:1.5}).expect(400);
+  await writeFile(path.join(settings.directory,'model-settings.json'), JSON.stringify(models));
+  assert.equal((await modelSettings.get('/api/settings/models').set('Cookie',cookie())).body.regionRetries, 2);
+  await modelSettings.put('/api/settings/models').set('Cookie',cookie()).send({...models,regionRetries:0}).expect(200);
+  await modelSettings.put('/api/settings/models').set('Cookie',cookie()).send(models).expect(200);
   app = appForJobs();
-  assert.deepEqual((await request(app).get('/api/settings/models').set('Cookie',cookie()).expect(200)).body,models);
+  assert.deepEqual((await request(app).get('/api/settings/models').set('Cookie',cookie()).expect(200)).body,{...models,regionRetries:0});
   assert.equal((await request(app).get('/api/config').set('Cookie',cookie()).expect(200)).body.model, models.recognition);
   await request(app).post('/api/recognize').set('Cookie',cookie()).attach('image',await image(),'doc.jpg').expect(200);
   await request(app).post('/api/recognize').set('Cookie',cookie()).attach('image',await pdfWithPages(1),'doc.pdf').expect(200);
@@ -504,6 +511,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   const order: string[] = [];
   let failSecond = true, failCrop = true;
   let jobId = '', sealCalls = 0, cropCalls = 0;
+  const resumedAttempts: number[] = [];
   const answer = (result: unknown) => Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }] });
   const fetcher: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body));
@@ -531,7 +539,9 @@ test('archives complete owned transcriptions before chat extraction and resumes 
       }
       cropCalls++;
       if (failCrop) return new Response('', {status:503});
-      if (cropCalls === 4) return new Response('', {status:429, headers: {'Retry-After':'0'}});
+      resumedAttempts.push(Date.now());
+      if (resumedAttempts.length === 1) return new Response('', {status:429, headers:{'Retry-After':'6'}});
+      if (resumedAttempts.length === 2) return new Response('', {status:503});
       return answer({text:'Act No. 000017',status:'read'});
     }
     assert.equal(body.model, models.chat);
@@ -556,7 +566,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   };
   const makeApp = () => createApp({...config, password:'', production:false, dataDir:settings.directory,historyStore:store}, fetcher);
   let app = makeApp();
-  await request(app).put('/api/settings/models').send(models).expect(200);
+  await request(app).put('/api/settings/models').send({...models,regionRetries:0}).expect(200);
   const created = await request(app).post('/api/registry').query({project:'Archive'}).attach('pdf','server/fixtures/scanned-two-pages.pdf').expect(202);
   jobId = created.body.job.id;
   async function wait(status: string) {
@@ -570,13 +580,16 @@ test('archives complete owned transcriptions before chat extraction and resumes 
     assert.fail('Timed out waiting for '+status);
   }
   assert.match((await wait('error')).error, /фрагмент страницы 1 — OpenRouter HTTP 503/);
-  assert.equal(cropCalls, 3);
+  assert.equal(cropCalls, 1);
   assert.equal((await store.transcripts(jobId))[0].readings,null);
   failCrop = false;
+  await request(app).put('/api/settings/models').send({...models,regionRetries:2}).expect(200);
   await request(app).post('/api/registry/'+jobId+'/retry').expect(200);
   assert.equal((await wait('error')).recordCount,1);
   assert.equal(sealCalls,1);
-  assert.equal(cropCalls,5);
+  assert.equal(cropCalls,4);
+  assert.ok(resumedAttempts[1] - resumedAttempts[0] >= 6000);
+  assert.ok(resumedAttempts[2] - resumedAttempts[1] >= 12000);
   assert.deepEqual((await store.transcripts(jobId))[0].readings?.map(r => r.kind), ['handwriting','seal','stamp']);
   const stamp = (await store.transcripts(jobId))[0].readings!.at(-1)!;
   assert.deepEqual([stamp.text,stamp.method,stamp.model], ['КОПИЯ ВЕРНА','page',models.recognition]);
@@ -586,7 +599,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   await request(app).post('/api/registry/'+jobId+'/retry').expect(200);
   assert.equal((await wait('done')).recordCount,2);
   assert.deepEqual(order, [...failedCalls,models.chat]);
-  assert.deepEqual(failedCalls,[models.recognition,...Array(6).fill(models.regions),models.recognition,models.chat,models.chat]);
+  assert.deepEqual(failedCalls,[models.recognition,...Array(5).fill(models.regions),models.recognition,models.chat,models.chat]);
   const entries = await store.documentFields(jobId);
   assert.deepEqual([...entries.values()].map(e=>[e.row.number,e.row.first,e.row.last]),[['000017',1,2],['C-15',2,2]]);
   const catalog = (await request(app).get('/api/catalog').query({project:'Archive'})).body;
@@ -596,14 +609,14 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   const book = new ExcelJS.Workbook(); await book.xlsx.readFile(xlsx);
   assert.equal(book.worksheets[0].getCell('C8').value, '000017');
   assert.equal(book.worksheets[0].getCell('C9').value, 'C-15');
-  assert.equal(order.length,11);
+  assert.equal(order.length,10);
   const preview = await request(app).get('/api/registry/'+jobId+'/documents/0/image?page=1&region='+stamp.id).expect(200);
   assert.match(preview.headers['content-type'],/image\/png/);
   await request(app).put('/api/settings/models').send({...models,regions:models.recognition}).expect(200);
   const verified = await request(app).post('/api/registry/'+jobId+'/documents/0/regions?page=1').send(stamp).expect(200);
   assert.equal(verified.body.region.method,'crop');
   assert.equal(verified.body.region.previous[0].method,'page');
-  assert.equal(order.length,12);
+  assert.equal(order.length,11);
   await request(app).delete('/api/registry/'+jobId).expect(200);
   assert.equal((await store.transcripts(jobId)).length,0);
   assert.equal((await store.documentFields(jobId)).size,0);

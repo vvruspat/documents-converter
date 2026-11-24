@@ -34,7 +34,7 @@ const modules = {
   handwriting:
     'Transcribe handwritten words, dates and corrections literally. A signature flourish alone does not identify a person. Never infer a signer.',
 };
-type Config = { apiKey: string; model: string; fetcher?: typeof fetch };
+type Config = { apiKey: string; model: string; regionRetries: number; fetcher?: typeof fetch };
 const transcription = z.object({ text: z.string().max(12000), status: z.enum(['read', 'partial', 'unreadable']) });
 
 const render = promisify(execFile);
@@ -161,8 +161,8 @@ function retryAfterMs(header: string | null) {
 }
 
 async function requestCrop(config: Config, body: string) {
+  let waitMs = 5000;
   for (let attempt = 0; ; attempt++) {
-    let waitMs = 2000 * 2 ** attempt;
     let reason = 'ошибка соединения с OpenRouter';
     try {
       const response = await (config.fetcher ?? fetch)('https://openrouter.ai/api/v1/chat/completions', {
@@ -198,8 +198,9 @@ async function requestCrop(config: Config, body: string) {
       if (error instanceof UserError) throw error;
       if (error instanceof Error && error.name === 'TimeoutError') reason = 'истёк тайм-аут OpenRouter';
     }
-    if (attempt >= 2 || waitMs > 5 * 60_000) throw new UserError(reason, 502);
+    if (attempt >= config.regionRetries || waitMs > 2_147_483_000) throw new UserError(reason, 502);
     await new Promise(resolve => setTimeout(resolve, waitMs + Math.random() * 500));
+    waitMs *= 2;
   }
 }
 
