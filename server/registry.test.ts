@@ -344,7 +344,7 @@ test('reads individual cropped regions, isolates documents sharing a page and re
       const meta = await sharp(bytes).metadata();
       assert.equal(meta.format,'png');
       activeReads--;
-      if (failStamp && body.messages[0].content.includes('stamp imprint')) return new Response('',{status:402});
+      if (failStamp && body.messages[0].content.includes('stamp imprint')) return Response.json({error:{metadata:{limit_source:'openrouter_key_limit'}}},{status:402});
       data = {status:'partial',text:'ООО [неразборчиво]'};
     }
     return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify(data)}}]});
@@ -369,7 +369,9 @@ test('reads individual cropped regions, isolates documents sharing a page and re
     const meta = await sharp(png.body).metadata();
     assert.ok(inputs.includes('data:image/png;base64,' + png.body.toString('base64')));
     assert.deepEqual([meta.width,meta.height],[Math.ceil(layout.width*2*.33)-Math.floor(layout.width*2*.07),Math.ceil(layout.height*2*.473)-Math.floor(layout.height*2*.277)]);
-    assert.equal((await supertest(app).get(base+'1/layout?page=1')).body.regions[0].status,'error');
+    const failedRegion = (await supertest(app).get(base+'1/layout?page=1')).body.regions[0];
+    assert.equal(failedRegion.status,'error');
+    assert.match(failedRegion.errorReason, /лимиту API-ключа/);
     await supertest(app).post(base+'0/regions?page=2').send(seal).expect(404);
     await supertest(app).post(base+'0/regions?page=1').send({...seal,right:50}).expect(400);
     await queue.models.save(initial);

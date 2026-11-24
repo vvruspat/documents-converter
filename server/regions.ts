@@ -174,14 +174,27 @@ async function requestCrop(config: Config, body: string) {
       if (response.ok) {
         reason = 'некорректный ответ модели';
         payload = await response.json();
+      } else if (response.status === 402) {
+        payload = await response.json().catch(() => undefined);
       } else {
         await response.body?.cancel();
       }
       const status = response.ok ? payload?.error?.code : response.status;
       if (Number.isInteger(status) && status >= 400 && status <= 599) {
         reason = 'OpenRouter HTTP ' + status;
-        if (status !== 408 && status !== 429 && status < 500) throw new UserError(reason, 502);
-        waitMs = Math.max(waitMs, retryAfterMs(response.headers.get('Retry-After')));
+        const retryAfter = retryAfterMs(response.headers.get('Retry-After'));
+        if (status === 402) {
+          const metadata = payload?.error?.metadata;
+          if (metadata?.limit_source === 'openrouter_credits') throw new UserError(reason + ' — недостаточно кредитов на балансе', 502);
+          if (metadata?.limit_source === 'openrouter_key_limit') throw new UserError(reason + ' — недостаточно доступных кредитов по лимиту API-ключа', 502);
+          if (metadata?.limit_source !== 'openrouter_in_flight_budget' && metadata?.reason !== 'in_flight_budget_exhausted' && !retryAfter) {
+            throw new UserError(reason + ' — проверьте баланс и лимит API-ключа', 502);
+          }
+          reason += ' — временно занят бюджет параллельных запросов';
+        } else if (status !== 408 && status !== 429 && status < 500) {
+          throw new UserError(reason, 502);
+        }
+        waitMs = Math.max(waitMs, retryAfter);
       } else {
         const choice = payload?.choices?.[0];
         if (choice?.message?.refusal || choice?.finish_reason === 'content_filter') throw new UserError('модель отклонила запрос', 502);
