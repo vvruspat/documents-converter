@@ -540,8 +540,8 @@ test('archives complete owned transcriptions before chat extraction and resumes 
       cropCalls++;
       if (failCrop) return new Response('', {status:503});
       resumedAttempts.push(Date.now());
-      if (resumedAttempts.length === 1) return new Response('', {status:429, headers:{'Retry-After':'6'}});
-      if (resumedAttempts.length === 2) return new Response('', {status:503});
+      if (resumedAttempts.length === 1) return Response.json({error:{metadata:{limit_source:'openrouter_in_flight_budget'}}}, {status:402, headers:{'Retry-After':'6'}});
+      if (resumedAttempts.length === 2) return new Response('', {status:429});
       return answer({text:'Act No. 000017',status:'read'});
     }
     assert.equal(body.model, models.chat);
