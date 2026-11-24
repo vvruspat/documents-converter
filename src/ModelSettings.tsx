@@ -117,7 +117,7 @@ function SettingsDialog({ close }: { close: () => void }) {
           : !error && <p>Загружаем настройки…</p>}
         {values && (
           <label>
-            Автоповторы OCR фрагмента
+            Автоповторы OCR страниц и фрагментов
             <input type="number" min={0} max={maxRegionRetries} step={1} required disabled={busy}
               value={Number.isFinite(values.regionRetries) ? values.regionRetries : ''}
               onChange={e => {

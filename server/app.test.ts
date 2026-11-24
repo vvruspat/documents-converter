@@ -505,6 +505,58 @@ test('indexes old jobs, groups matching sources and resolves a kit when its docu
   await request(app).get('/api/registry/'+volume+'/source').set('Cookie',cookie()).expect('Content-Type',/pdf/).expect(200);
 });
 
+test('resumes at the failed page, archives exhausted OCR and exports its review reason without joining across the gap', async t => {
+  const settings = await options(), store = await openStore(settings);
+  const pages: number[] = [];
+  const answer = (data: unknown) => Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(data) } }] });
+  let blocked = true;
+  const app = createApp({ ...config, password: '', production: false, dataDir: settings.directory, historyStore: store }, async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    if (body.response_format.json_schema.name === 'registry_transcript') {
+      const { page, precedingDocument } = JSON.parse(body.messages[1].content[0].text);
+      pages.push(page);
+      if (page === 2 && blocked) return new Response('', { status: 402 });
+      if (page === 2) return answer({ blank: false, object: '', section: '', documents: [], regions: [] });
+      if (page === 3) assert.equal(precedingDocument, '');
+      return answer({ blank: false, object: '', section: '', regions: [], continuation: page === 3 ? 'Third sheet' : '',
+        documents: page === 1 ? [{ title: 'First', text: 'First sheet' }] : [] });
+    }
+    const parts = JSON.parse(body.messages[1].content);
+    assert.equal(parts.length, 1);
+    return answer({ kind: 'Акт', name: parts[0].text, number: '', date: '', organization: '',
+      material: '', batch: '', work: '', floor: '', section: '', reviewFields: [], evidence: [] });
+  });
+  const api = request(app);
+  await api.put('/api/settings/models').send({ recognition: 'test/ocr', regions: 'test/crop', chat: 'test/chat', regionRetries: 1 }).expect(200);
+  const created = await api.post('/api/registry').attach('pdf', await pdfWithPages(3), 'review.pdf').expect(202);
+  const queue = app.locals.registryQueue;
+  const id = created.body.job.id;
+  await t.waitFor(() => assert.equal(queue.get(id).status, 'error'), { timeout: 30_000 });
+  assert.match(queue.get(id).error, /402/);
+  assert.equal(queue.get(id).processedPages, 1);
+  blocked = false;
+  await api.post('/api/registry/' + id + '/retry').expect(200);
+  await t.waitFor(() => assert.equal(queue.get(id).status, 'done'), { timeout: 30_000 });
+  assert.deepEqual(pages, [1, 2, 2, 2, 3]);
+  assert.equal(queue.get(id).processedPages, 3);
+  assert.equal(queue.get(id).reviewPageCount, 1);
+  assert.equal(queue.get(id).recordCount, 2);
+  const verifyWorkbook = async () => {
+    const book = new ExcelJS.Workbook();
+    await book.xlsx.readFile(await queue.downloadPath(queue.get(id)));
+    const sheet = book.worksheets[0];
+    assert.match(String(sheet.getCell('B4').value), /Страниц для проверки: 1/);
+    assert.deepEqual(['G8','I8','G9','I9'].map(cell => sheet.getCell(cell).value), [1,1,3,3]);
+    const review = book.getWorksheet('Страницы для проверки')!;
+    assert.equal(review.getCell('A2').value, 2);
+    assert.match(String(review.getCell('B2').value), /ошибка структуры ответа.*continuation/);
+  };
+  await verifyWorkbook();
+  await rm(queue.resultPath(id));
+  await verifyWorkbook();
+  assert.deepEqual(pages, [1, 2, 2, 2, 3]);
+});
+
 test('archives complete owned transcriptions before chat extraction and resumes a failed register from PostgreSQL', async () => {
   const settings = await options(), store = await openStore(settings);
   const models = { recognition: 'test/reader', regions: 'test/detail', chat: 'test/archive' };
