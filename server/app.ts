@@ -129,6 +129,7 @@ export function createApp(config: AppConfig, fetcher: typeof fetch = fetch) {
     if (job.status !== 'done') throw new UserError('Реестр ещё не готов.', 409);
     res.download(await registry.downloadPath(job), job.resultName, { dotfiles: 'allow' }, error => { if (error && !res.headersSent) next(new UserError('Файл не найден.', 404)); });
   });
+  app.post('/api/registry/:id/package', async (req, res) => { res.json({ job: await registry.retryPackage(String(req.params.id)) }); });
   app.post('/api/registry/:id/retry', async (req, res) => { res.json({ job: await registry.retry(String(req.params.id)) }); });
   app.post('/api/registry/:id/reprocess', async (req, res) => { res.status(202).json({ job: await registry.reprocess(String(req.params.id)) }); });
   app.delete('/api/registry/:id', async (req, res) => {

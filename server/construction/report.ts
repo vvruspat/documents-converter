@@ -1,3 +1,6 @@
+import { Readable } from 'node:stream';
+import { addRegisterSheets } from '../register-workbook.js';
+import { fieldLabels, type Field } from '../../shared/scan.js';
 import { workChecklist } from '../../shared/readiness.js';
 import { evaluateStandardRules, withHiddenWorks } from '../../shared/standard-rules.js';
 import { baseForm } from './forms.js';
@@ -18,6 +21,10 @@ const safe = (s: string) =>
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
     .replace(/^\.+|[. ]+$/g, '')
     .slice(0, 120) || 'Документ';
+const originalName = (name: string) => {
+  const ext = name.match(/\.[a-z0-9]{1,10}$/i)?.[0] || '';
+  return ext ? safe(name.slice(0, -ext.length)) + ext : safe(name);
+};
 type RegisterRow = {
   type: string;
   name: string;
@@ -155,7 +162,7 @@ export async function report(
   const selectedWorks = p.rows.filter(
     (r) => r.kind === 'work' && r.links.pack?.includes(pack) && (!selected.length || selected.includes(r.id)),
   );
-  if (!selectedWorks.length || selected.some((id) => !selectedWorks.some((w) => w.id === id)))
+  if ((!selectedWorks.length && !Object.values(byId.get(pack)!.links).some(ids => ids.length)) || selected.some((id) => !selectedWorks.some((w) => w.id === id)))
     throw new BadRequestException('В выбранном комплекте нет указанных работ.');
   // A structure act must travel with the hidden-work acts on which it relies.
   const works = withHiddenWorks(selectedWorks, byId);
@@ -167,18 +174,15 @@ export async function report(
   const originals = new Map<string, string>(),
     incomingFiles = new Map<string, string>(),
     templates = new Map<string, Buffer>();
-  let bytes = 0;
-  const add = (file: string, data: Buffer) => {
-    bytes += data.length;
-    if (bytes > 300 * 1024 * 1024)
-      throw new BadRequestException('Комплект превышает 300 МБ. Разделите его на несколько комплектов.');
-    zip.file(file, data);
-  };
+  const add = (file: string, data: Buffer) => { zip.file(file, data); };
+  // Read one original when its ZIP entry is written, including for multi-hundred-MB volumes.
+  function addOriginal(file: string, id: string) {
+    zip.file(file, Readable.from((async function* () { yield (await asset(id)).data; })()), { compression: 'STORE' });
+  }
   async function addDocument(r: Entry, num: string) {
     if (r.file && !originals.has(r.id)) {
-      const file = await asset(r.id),
-        filePath = 'Приложения/' + String(originals.size + 1).padStart(3, '0') + ' ' + safe(file.name);
-      add(filePath, file.data);
+      const filePath = 'Приложения/' + String(originals.size + 1).padStart(3, '0') + ' ' + originalName(r.file);
+      addOriginal(filePath, r.id);
       originals.set(r.id, filePath);
     }
     register.push({
@@ -210,12 +214,12 @@ export async function report(
   const org = (key: string) => join(p.v[key], p.v[key + 'Details']);
   for (const [index, w] of works.entries()) {
     const missing = workChecklist(w, byId).filter((c) => c.blocking && !c.present);
-    if (missing.length)
+    if (missing.length && (!w.file || missing.some(c => !c.field)))
       throw new BadRequestException(
         (w.v.name || 'Шаг без названия') + ' · ' + missing.map((c) => c.detail || c.label).join(', '),
       );
     const t = linked(w, 'template')[0],
-      form = t.v.form,
+      form = t?.v.form || '',
       v = w.v,
       num = numberOf(p, w),
       name = workTitle(v),
@@ -224,21 +228,20 @@ export async function report(
     const materials = aggregate('materials'),
       schemes = aggregate('schemes'),
       protocols = aggregate('protocols');
-    const prefix = String(index + 1).padStart(3, '0') + ' ' + safe(t.v.name + ' ' + num);
+    const prefix = String(index + 1).padStart(3, '0') + ' ' + safe((t?.v.name || 'Акт') + ' ' + num);
     const folder = 'Акты/' + prefix,
       actFile = folder + '/' + prefix + '.docx';
     let original = '';
     if (w.file) {
-      const source = await asset(w.id);
-      original = folder + '/Оригинал ' + safe(source.name);
-      add(original, source.data);
+      original = folder + '/Оригинал ' + originalName(w.file);
+      addOriginal(original, w.id);
     }
     register.push({
-      type: t.v.name,
-      name: (t.v.description || actTitle[form]) + '. ' + name,
+      type: t?.v.name || 'Акт',
+      name: (t?.v.description || actTitle[form] || 'Акт') + '. ' + name,
       number: num,
       date: localDate(v.date),
-      org: p.v.contractor || '',
+      org: v.issuer || p.v.contractor || '',
       pages: v.pages || '',
       file: original || actFile,
       act: num,
@@ -249,6 +252,7 @@ export async function report(
       (a, b) => order.indexOf(a.kind) - order.indexOf(b.kind),
     );
     for (const document of [...attachments, ...aggregate('attachments')]) await addDocument(document, num);
+    if (missing.length) continue;
     let matText = join(...materials.map(label)),
       docText = join(...[...schemes, ...protocols].map(label));
     const annex: string[] = [];
@@ -417,6 +421,39 @@ export async function report(
   const registerRows = (rs: RegisterRow[]) =>
     rs.map((r, i) => [String(i + 1), r.type, r.name, r.number, r.date, r.org, r.pages, r.file, r.act]);
   const packName = byId.get(pack)!.v;
+  const groups = new Map<string, RegisterRow>();
+  for (const r of register) {
+    const prior = groups.get(r.key);
+    if (prior) prior.act = join(prior.act, r.act);
+    else groups.set(r.key, { ...r });
+  }
+  const lines = [...groups.values()].map(r => {
+    const v = byId.get(r.key)?.v || {};
+    const source = (v.sourcePages || '').match(/^(.+?\.pdf),?\s*стр\.\s*([\d\s,–—-]+)/i);
+    const sameFile = source && (packName.sourcePages || '').split('; ').includes(source[1]);
+    const range = sameFile ? source[2].trim().match(/^(\d+)(?:\s*[-–—]\s*(\d+))?$/) : null;
+    const sameJob = Boolean(packName.sourceJob && packName.sourceJob === v.sourceJob);
+    const first = sameJob && +v.sourceFirst > 0 ? +v.sourceFirst : range ? +range[1] : sameFile ? source[2].trim() : undefined;
+    const last = sameJob && +v.sourceLast > 0 ? +v.sourceLast : range ? +(range[2] || range[1]) : undefined;
+    const reviewFields = (v.reviewFields || '').split(',').filter((key): key is Field => Object.hasOwn(fieldLabels, key));
+    return { name: v.sourceTitle && byId.get(r.key)?.kind === 'work' && (v.work || v.sourceTitle) === v.name ? v.sourceTitle : r.name, number: v.sourceTitle ? v.number : r.number,
+      date: r.date, organization: r.org, count: /^\d+$/.test(r.pages) ? +r.pages : undefined, first, last, reviewFields,
+      order: sameJob && v.sourceIndex ? +v.sourceIndex : Infinity };
+  }).sort((a, b) => (Number.parseInt(String(a.first)) || Infinity) - (Number.parseInt(String(b.first)) || Infinity) || a.order - b.order);
+  const reviews: {page: number; reason: string}[] = [];
+  for (const [key, value] of Object.entries(packName)) {
+    if (!/^sourceReviews\d+$/.test(key)) continue;
+    try {
+      const notes: unknown = JSON.parse(value);
+      if (Array.isArray(notes)) for (const n of notes)
+        if (Number.isInteger(n?.page) && typeof n.reason === 'string' && (!selected.length ||
+          lines.some(r => typeof r.first === 'number' && r.last && n.page >= r.first && n.page <= r.last))) reviews.push(n);
+    } catch { /* Older and manually edited projects may lack structured review notes. */ }
+  }
+  addRegisterSheets(book, lines, { object: packName.sourceObject || p.v.object || p.v.name, section: packName.sourceSection || packName.name,
+    sourceName: packName.sourcePages || packName.name, source: packName.sourcePages ?
+      'Источник: ' + packName.sourcePages + '. Листы «с/по» — страницы PDF.' : 'Комплект: ' + packName.name,
+    reviews: reviews.sort((a,b) => a.page - b.page) });
   sheet(
     book,
     'Комплект',
@@ -435,12 +472,6 @@ export async function report(
     [38, 96],
   );
   sheet(book, 'По актам', head, registerRows(register), [7, 24, 70, 26, 21, 32, 10, 54, 22]);
-  const groups = new Map<string, RegisterRow>();
-  for (const r of register) {
-    const prior = groups.get(r.key);
-    if (prior) prior.act = join(prior.act, r.act);
-    else groups.set(r.key, { ...r });
-  }
   sheet(
     book,
     'По типам',
@@ -475,7 +506,7 @@ export async function report(
   add('Реестр ' + filename + '.xlsx', await xlsx(book));
   return {
     name: filename + '.zip',
-    data: await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }),
+    zip,
   };
 }
 

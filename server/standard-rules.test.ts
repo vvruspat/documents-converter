@@ -33,7 +33,7 @@ test('standard rules apply to the selected act and its real attachments in the e
   original.file = 'test.pdf';
   const generate = () =>
     report(project, pack.id, [], async () => ({ name: 'test.pdf', data: Buffer.from('test') }));
-  const zip = await JSZip.loadAsync((await generate()).data);
+  const zip = await JSZip.loadAsync(await (await generate()).zip.generateAsync({ type: 'nodebuffer' }));
   const doc = await JSZip.loadAsync(await zip.file(/\.docx$/)[0].async('nodebuffer'));
   assert.match(await doc.file('word/document.xml')!.async('string'), /Ручной текст.*Дополнение/s);
   assert.equal(zip.file(/\.pdf$/).length, 1);
@@ -49,7 +49,7 @@ test('standard rules apply to the selected act and its real attachments in the e
   );
   await assert.rejects(generate, /разные замены/i);
   standard.rules.pop();
-  const replaced = await JSZip.loadAsync((await generate()).data);
+  const replaced = await JSZip.loadAsync(await (await generate()).zip.generateAsync({ type: 'nodebuffer' }));
   const replacedDoc = await JSZip.loadAsync(await replaced.file(/\.docx$/)[0].async('nodebuffer'));
   const xml = await replacedDoc.file('word/document.xml')!.async('string');
   assert.match(xml, /Замена.*Дополнение/s);
