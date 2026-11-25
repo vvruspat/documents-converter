@@ -1,4 +1,5 @@
 import {
+  acceptsOriginal,
   fields,
   formTypes,
   numberOf,
@@ -19,6 +20,7 @@ const keys: Record<Kind, string[]> = {
   pack: ['name', 'number'],
   person: ['role', 'company', 'position', 'name', 'start', 'end'],
   scheme: ['docType', 'issuer', 'number', 'date', 'name'],
+  attachment: ['docType', 'issuer', 'number', 'date', 'name'],
   protocol: ['docType', 'issuer', 'number', 'date', 'name'],
   material: ['category', 'docType', 'issuer', 'received', 'number', 'date', 'name', 'batch'],
   template: ['form', 'name', 'description'],
@@ -50,7 +52,7 @@ export function entryColumns(project: SavedProject, kind: Kind): Column<Entry>[]
       label: 'Наличие правил',
       value: (r) => (r.rules?.length ? 'С правилами' : 'Без правил'),
     });
-  if (['material', 'protocol', 'scheme', 'template'].includes(kind))
+  if (acceptsOriginal(kind))
     columns.unshift({ key: 'file', label: 'Оригинал', value: (r) => (r.file ? 'С оригиналом' : 'Без оригинала') });
   if (kind === 'pack') {
     const counts = new Map<string, number>();

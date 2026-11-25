@@ -8,6 +8,7 @@ export const kinds = [
   'material',
   'scheme',
   'protocol',
+  'attachment',
   'standard',
   'template',
 ] as const;
@@ -19,9 +20,11 @@ export const labels: Record<Kind, string> = {
   material: 'Материалы и сертификаты',
   scheme: 'Исполнительные схемы',
   protocol: 'Протоколы',
+  attachment: 'Реестры и приложения',
   standard: 'Нормативы',
   template: 'Шаблоны актов',
 };
+export const acceptsOriginal = (kind: Kind) => ['work', 'material', 'protocol', 'scheme', 'attachment', 'template'].includes(kind);
 export const formTypes = { hidden: 'АОСР', structure: 'АООК', incoming: 'АВК' } as const;
 export const roles = [
   'СК Заказчика',
@@ -65,8 +68,14 @@ const documentFields = [
   f('issuer', 'Организация'),
   f('pages', 'Число листов'),
 ];
+const attachmentLinks = [
+  link('materials', 'Материалы и документы качества', 'material', true),
+  link('schemes', 'Схемы', 'scheme', true),
+  link('protocols', 'Испытания и обследования', 'protocol', true),
+  link('attachments', 'Реестры и прочие приложения', 'attachment', true),
+];
 export const fields: Record<Kind, Field[]> = {
-  pack: [title('Название комплекта'), f('number', 'Номер комплекта')],
+  pack: [title('Название комплекта'), f('number', 'Номер комплекта'), ...attachmentLinks],
   person: [
     title('Фамилия, имя, отчество'),
     choice('role', 'Представитель', [...roles, 'Иное лицо']),
@@ -98,6 +107,7 @@ export const fields: Record<Kind, Field[]> = {
     f('verdict', 'Заключение о качестве'),
   ],
   scheme: [title('Наименование схемы'), ...documentFields],
+  attachment: [title('Наименование документа'), ...documentFields],
   protocol: [title('Наименование протокола'), ...documentFields],
   standard: [title('Обозначение'), f('description', 'Название норматива', 'long')],
   template: [
@@ -124,9 +134,7 @@ export const fields: Record<Kind, Field[]> = {
     f('axes', 'В осях'),
     f('next', 'Последующие работы', 'long'),
     ...roles.map((role, i) => link('signer' + i, 'Подпись · ' + role, 'person')),
-    link('materials', 'Материалы и документы качества', 'material', true),
-    link('schemes', 'Схемы', 'scheme', true),
-    link('protocols', 'Испытания и обследования', 'protocol', true),
+    ...attachmentLinks,
     link('children', 'Освидетельствованные скрытые работы', 'work', true),
     f('design', 'Проектная и рабочая документация', 'long'),
     link('standards', 'Своды правил', 'standard', true),

@@ -41,7 +41,7 @@ import { StandardsBrowser } from './StandardsBrowser';
 import { AppShell, type ShellProps } from '../AppShell';
 import s from './projects.module.css';
 
-const sections: Kind[] = ['pack', 'work', 'material', 'scheme', 'protocol', 'person', 'standard', 'template'];
+const sections: Kind[] = ['pack', 'work', 'material', 'scheme', 'protocol', 'attachment', 'person', 'standard', 'template'];
 const icons = {
   work: ClipboardList,
   pack: FileArchive,
@@ -49,6 +49,7 @@ const icons = {
   material: FileCheck2,
   scheme: Files,
   protocol: ClipboardList,
+  attachment: Files,
   standard: LibraryBig,
   template: FileStack,
 };
@@ -59,6 +60,7 @@ const single: Record<Kind, string> = {
   material: 'Материал и сертификат',
   scheme: 'Исполнительная схема',
   protocol: 'Протокол',
+  attachment: 'Реестр или приложение',
   standard: 'Норматив',
   template: 'Шаблон',
 };

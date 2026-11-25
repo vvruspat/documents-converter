@@ -6,6 +6,7 @@ import s from './projects.module.css';
 const groups = [
   { key: 'materials', kind: 'material', label: 'Материал или сертификат' },
   { key: 'schemes', kind: 'scheme', label: 'Исполнительная схема' },
+  { key: 'attachments', kind: 'attachment', label: 'Реестр или приложение' },
   { key: 'protocols', kind: 'protocol', label: 'Протокол' },
 ] as const;
 export const isDocumentLink = (key: string) => groups.some((g) => g.key === key);

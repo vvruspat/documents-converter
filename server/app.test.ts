@@ -731,13 +731,31 @@ test('construction packages persist originals atomically, isolate packages and i
   assert.match(await avkDoc.file('word/document.xml')!.async('string'), /Материал 5/);
   const batch = () => api.put(route).field('project', JSON.stringify(saved.body)).field('version', '2');
   await batch().field('entry', materials[1].id).attach('file', Buffer.from('first'), 'one.pdf')
-    .field('entry', hidden.id).attach('file', Buffer.from('second'), 'two.pdf').expect(400);
+    .field('entry', pack.id).attach('file', Buffer.from('second'), 'two.pdf').expect(400);
   assert.equal((await api.get(route).expect(200)).body.version, 2);
   await batch().field('entry', materials[1].id).attach('file', Buffer.from('first'), 'one.pdf')
     .field('entry', materials[2].id).attach('file', Buffer.from('second'), 'two.pdf').expect(200);
   for (const [row, value] of [[materials[1], 'first'], [materials[2], 'second']] as const) {
     const file = await api.get(route + '/file/' + row.id).buffer(true).parse(readBinary).expect(200);
     assert.equal(file.body.toString(), value);
+  }
+  const withFiles = (await api.get(route)).body;
+  const appendix = entry('attachment', { name: 'Опись' });
+  withFiles.rows.push(appendix);
+  withFiles.rows.find((r: {id: string}) => r.id === pack.id).links.attachments = [appendix.id];
+  await api.put(route).send({ project: withFiles, version: withFiles.version }).expect(200);
+  const scans = await api.put(route).field('version', String(withFiles.version + 1))
+    .field('entry', hidden.id).attach('file', Buffer.from('signed'), 'signed.pdf')
+    .field('entry', appendix.id).attach('file', Buffer.from('index'), 'index.pdf').expect(200);
+  assert.deepEqual(scans.body, { version: withFiles.version + 2 });
+  await api.put(route).field('version', String(withFiles.version + 1))
+    .field('entry', hidden.id).attach('file', Buffer.from('stale'), 'stale.pdf').expect(409);
+  const fullReport = await api.post(route + '/report').send({ pack: pack.id, selected: [] })
+    .buffer(true).parse(readBinary).expect(201);
+  const archive = await JSZip.loadAsync(fullReport.body);
+  for (const [name, contents] of [['signed.pdf', 'signed'], ['index.pdf', 'index']]) {
+    const match = Object.keys(archive.files).find((file) => file.endsWith(name))!;
+    assert.equal(await archive.file(match)!.async('string'), contents);
   }
 });
 

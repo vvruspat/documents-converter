@@ -2,6 +2,7 @@ import { useRef, useState, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Download, X, ScanText, Trash2 } from 'lucide-react';
 import {
+  acceptsOriginal,
   canSign,
   matchStandardText,
   fields,
@@ -78,7 +79,7 @@ export function Modal({
     </Dialog.Root>
   );
 }
-const fileKinds = ['template', 'material', 'scheme', 'protocol'];
+
 export function recordTitle(r: Entry) {
   return (
     [
@@ -268,7 +269,7 @@ export function Editor({
           </div>
         )}
         <div className={s.formBody} hidden={section !== 'act'}>
-          {row && fileKinds.includes(row.kind) && (
+          {row && acceptsOriginal(row.kind) && (
             <div className={s.fileBox}>
               <label className={s.field}>
                 {row.kind === 'template' ? 'Файл шаблона Word' : 'Оригинал документа'}
@@ -322,6 +323,8 @@ export function Editor({
             </div>
           )}
           <div className={s.formGrid}>
+            {v.sourcePages && <p className={s.wide}>Источник · {v.sourcePages}</p>}
+            {v.review && <p className={s.wide}>Требует сверки · {v.review}</p>}
             {spec.map((field) => {
               if (drawer && isDocumentLink(field.key)) return null;
               if (

@@ -18,12 +18,14 @@ const columns: Column<Pack>[] = [
 function PackageCard({
   item,
   initiallyOpen,
+  records,
   edit,
   plan,
   download,
 }: {
   item: Pack;
   initiallyOpen: boolean;
+  records: Map<string, Entry>;
   edit: (r: Entry, documents?: boolean) => void;
   plan: (id: string, name: string) => Promise<void>;
   download: (id: string) => void;
@@ -67,6 +69,19 @@ function PackageCard({
             </button>
           </div>
           {steps.length > 0 && <WorkRegister steps={steps} packId={pack.id} edit={edit} />}
+          {Object.values(pack.links).some((ids) => ids.length > 0) && (
+            <details>
+              <summary>Документы комплекта</summary>
+              <ul>
+                {Object.values(pack.links).flat().map((id) => {
+                  const doc = records.get(id);
+                  return doc && <li key={id}><button className={s.text} onClick={() => edit(doc)}>
+                    {[doc.v.docType, doc.v.name, doc.v.number].filter(Boolean).join(' · ')}
+                  </button></li>;
+                })}
+              </ul>
+            </details>
+          )}
           <form
             className={s.planForm}
             onSubmit={(e) => {
@@ -113,6 +128,7 @@ export function PackageDashboard({
   plan: (id: string, name: string) => Promise<void>;
   download: (id: string) => void;
 }) {
+  const records = useMemo(() => new Map(project.rows.map((r) => [r.id, r])), [project]);
   const packs = useMemo(() => packagePlan(project.rows), [project]);
   return (
     <>
@@ -139,6 +155,7 @@ export function PackageDashboard({
                 <PackageCard
                   key={item.pack.id}
                   item={item}
+                  records={records}
                   initiallyOpen={packs.length === 1}
                   edit={edit}
                   plan={plan}
