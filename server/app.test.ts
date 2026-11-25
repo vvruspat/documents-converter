@@ -327,6 +327,10 @@ test('converts a 21-page PDF larger than 12 MiB and builds a register from the s
       const { page } = JSON.parse(body.messages[1].content[0].text);
       data = { blank: false, object: '', section: '', continuation: '', regions: [],
         documents: [{ title: 'Certificate ' + page, text: 'Certificate number ' + page }] };
+    } else if (schema === 'registry_project') {
+      const input = JSON.parse(body.messages[1].content);
+      assert.equal(input.filename, 'kit.pdf');
+      data = { projectId: null, projectName: 'Объект не определён', packageName: 'Сертификаты' };
     } else {
       assert.equal(schema, 'registry_document_fields');
       const [part] = JSON.parse(body.messages[1].content);
@@ -349,6 +353,19 @@ test('converts a 21-page PDF larger than 12 MiB and builds a register from the s
   assert.equal(job.status, 'done', job.error);
   assert.equal(job.processedPages, 21);
   assert.equal(job.recordCount, 21);
+  assert.ok(job.constructionPackage, job.packageError);
+  const project = await historyStore.projects.get(job.constructionPackage.project);
+  const pack = project.rows.find(r => r.id === job.constructionPackage.pack)!;
+  assert.equal(pack.links.materials.length, 21);
+  const download = await client.post('/api/construction/' + project.id + '/report').set('Cookie', cookie())
+    .send({ pack: pack.id }).buffer(true).parse((res, done) => {
+      const chunks: Buffer[] = [];
+      res.on('data', chunk => chunks.push(Buffer.from(chunk))).on('end', () => done(null, Buffer.concat(chunks)));
+    }).expect(201);
+  const archive = await (await import('jszip')).default.loadAsync(download.body);
+  assert.equal(archive.file(/\.pdf$/).length, 21);
+  const exported = new ExcelJS.Workbook();
+  await exported.xlsx.load(await archive.file(/\.xlsx$/)[0].async('arraybuffer'));
   const result = await client.get(url + '/result').set('Cookie', cookie()).buffer(true).parse((res, done) => {
     const chunks: Buffer[] = [];
     res.on('data', chunk => chunks.push(Buffer.from(chunk)));
@@ -356,7 +373,12 @@ test('converts a 21-page PDF larger than 12 MiB and builds a register from the s
   }).expect(200);
   const book = new ExcelJS.Workbook();
   await book.xlsx.load(result.body);
-  for (let i = 1; i <= 21; i++) assert.equal(book.worksheets[0].getCell('C' + (7 + i)).value, 'C-' + i);
+  for (let i = 1; i <= 21; i++) {
+    assert.equal(book.worksheets[0].getCell('C' + (7 + i)).value, 'C-' + i);
+    assert.deepEqual(exported.worksheets[0].getRow(7 + i).values, book.worksheets[0].getRow(7 + i).values);
+  }
+  assert.equal(exported.worksheets[0].getCell('B5').value, book.worksheets[0].getCell('B5').value);
+  assert.equal(exported.worksheets[0].getCell('B8').font.bold, true);
 });
 
 test('native OpenRouter PDF input preserves the complete file and all-page extraction instructions', async () => {
@@ -521,6 +543,8 @@ test('resumes at the failed page, archives exhausted OCR and exports its review 
       return answer({ blank: false, object: '', section: '', regions: [], continuation: page === 3 ? 'Third sheet' : '',
         documents: page === 1 ? [{ title: 'First', text: 'First sheet' }] : [] });
     }
+    if (body.response_format.json_schema.name === 'registry_project')
+      return answer({ projectId: null, projectName: 'Объект не определён', packageName: 'Том' });
     const parts = JSON.parse(body.messages[1].content);
     assert.equal(parts.length, 1);
     return answer({ kind: 'Акт', name: parts[0].text, number: '', date: '', organization: '',
@@ -561,7 +585,7 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   const settings = await options(), store = await openStore(settings);
   const models = { recognition: 'test/reader', regions: 'test/detail', chat: 'test/archive' };
   const order: string[] = [];
-  let failSecond = true, failCrop = true;
+  let failSecond = true, failCrop = true, failRoute = true;
   let jobId = '', sealCalls = 0, cropCalls = 0;
   const resumedAttempts: number[] = [];
   const answer = (result: unknown) => Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }] });
@@ -597,6 +621,11 @@ test('archives complete owned transcriptions before chat extraction and resumes 
       return answer({text:'Act No. 000017',status:'read'});
     }
     assert.equal(body.model, models.chat);
+    if (body.response_format.json_schema.name === 'registry_project') {
+      if (failRoute) return new Response('', {status:402});
+      const { projects } = JSON.parse(body.messages[1].content);
+      return answer({ projectId: projects[0].id, projectName: '', packageName: 'Кровля' });
+    }
     const saved = await store.transcripts(jobId);
     assert.equal(saved.length, 2);
     assert.ok(saved.every(p => p.readings !== null));
@@ -613,6 +642,8 @@ test('archives complete owned transcriptions before chat extraction and resumes 
       if (failSecond) return new Response('', {status:402});
     }
     return answer({kind:first?'Акт':'Сертификат',name:first?'Act':'Certificate',number:first?'000017':'C-15',
+      act: first ? { form: 'hidden', start: '2026-11-01', end: '2026-11-02', design: 'РД-9', axes: '1–3', next: '', elevation: '', compliance: '',
+        signers: [{ role: 'Подрядчик', name: 'Петров А.А.', position: 'Прораб', company: 'Builder', authority: '' }] } : null,
       date:'',organization:first?'Builder':'Lab',material:'',batch:'',work:'',floor:'',section:'',
       reviewFields:[],evidence:[{field:'number',page:first?1:2,quote:first?'Act No. 000017':'C-15'}]});
   };
@@ -650,7 +681,8 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   failSecond = false;
   await request(app).post('/api/registry/'+jobId+'/retry').expect(200);
   assert.equal((await wait('done')).recordCount,2);
-  assert.deepEqual(order, [...failedCalls,models.chat]);
+  assert.deepEqual(order, [...failedCalls, models.chat, models.chat]);
+  assert.match(app.locals.registryQueue.get(jobId).packageError, /402/);
   assert.deepEqual(failedCalls,[models.recognition,...Array(5).fill(models.regions),models.recognition,models.chat,models.chat]);
   const entries = await store.documentFields(jobId);
   assert.deepEqual([...entries.values()].map(e=>[e.row.number,e.row.first,e.row.last]),[['000017',1,2],['C-15',2,2]]);
@@ -661,17 +693,63 @@ test('archives complete owned transcriptions before chat extraction and resumes 
   const book = new ExcelJS.Workbook(); await book.xlsx.readFile(xlsx);
   assert.equal(book.worksheets[0].getCell('C8').value, '000017');
   assert.equal(book.worksheets[0].getCell('C9').value, 'C-15');
-  assert.equal(order.length,10);
+  assert.equal(order.length,11);
   const preview = await request(app).get('/api/registry/'+jobId+'/documents/0/image?page=1&region='+stamp.id).expect(200);
   assert.match(preview.headers['content-type'],/image\/png/);
   await request(app).put('/api/settings/models').send({...models,regions:models.recognition}).expect(200);
   const verified = await request(app).post('/api/registry/'+jobId+'/documents/0/regions?page=1').send(stamp).expect(200);
   assert.equal(verified.body.region.method,'crop');
   assert.equal(verified.body.region.previous[0].method,'page');
-  assert.equal(order.length,11);
+  assert.equal(order.length,12);
+  const destination = await request(app).post('/api/construction').send({ name: 'Тестовый объект', pack: 'Фундамент' }).expect(201);
+  failRoute = false;
+  const retry = () => request(app).post('/api/registry/' + jobId + '/package').expect(200);
+  const [first, second] = await Promise.all([retry(), retry()]);
+  assert.deepEqual(first.body.job.constructionPackage, second.body.job.constructionPackage);
+  assert.equal(first.body.job.constructionPackage.project, destination.body.id);
+  assert.equal(order.length, 13);
+  const built = await store.projects.get(destination.body.id);
+  assert.equal(built.rows.filter(r => r.kind === 'pack').length, 2);
+  assert.equal(built.rows.filter(r => r.file).length, 2);
+  const act = built.rows.find(r => r.kind === 'work')!;
+  assert.equal(act.v.design, 'РД-9');
+  assert.equal(act.v.start, '2026-11-01');
+  assert.equal(built.rows.find(r => r.id === act.links.signer3[0])!.v.name, 'Петров А.А.');
+  assert.equal(act.links.materials.length, 1);
   await request(app).delete('/api/registry/'+jobId).expect(200);
   assert.equal((await store.transcripts(jobId)).length,0);
   assert.equal((await store.documentFields(jobId)).size,0);
+});
+
+test('registry package import keeps acts separate and rolls back or reuses the whole volume atomically', async () => {
+  const store = (await openStore(await options())).projects;
+  const route = { projectId: null, projectName: 'Опалиха', packageName: 'Монтаж дверей · секция 1' };
+  const source = { job: randomUUID(), root: '', filename: 'Двери.pdf', digest: 'same-content', object: 'Опалиха', section: 'Двери', reviews: [] };
+  const rows = [
+    ['Акт', 'Акт освидетельствования скрытых работ · монтаж'],
+    ['Сертификат', 'Сертификат на дверь'],
+    ['Акт', 'АООК · приёмка'],
+    ['Акт', 'Акт испытаний'],
+    ['Реестр', 'Реестр приложений'],
+  ].map(([kind, name], i) => ({ kind, name, number: String(i), organization: '', date: '',
+    first: i+1, last: i+1, uncertain: false, material: '', batch: '', floor: '', section: '', work: '' }));
+  await assert.rejects(store.importRegistry(source, route, rows, async i => {
+    if (i === 3) throw Error('missing scan');
+    return Buffer.from(String(i));
+  }), /missing scan/);
+  assert.deepEqual(await store.list(), []);
+  const importVolume = (job: string) => store.importRegistry({ ...source, job }, route, rows, async i => Buffer.from(String(i)));
+  const [one, two] = await Promise.all([importVolume(source.job), importVolume(randomUUID())]);
+  assert.deepEqual(one, two);
+  const result = await store.get(one.project);
+  const acts = result.rows.filter(r => r.kind === 'work');
+  assert.equal(acts.length, 2);
+  assert.equal(acts[0].links.materials.length, 1);
+  assert.equal(acts[1].links.protocols.length, 1);
+  assert.equal(acts[1].links.attachments.length, 1);
+  assert.ok(!acts[1].links.materials);
+  assert.equal(result.rows.filter(r => r.kind === 'pack').length, 1);
+  assert.equal((await store.asset(result.id, acts[1].id, result.version)).data.toString(), '2');
 });
 
 test('construction packages persist originals atomically, isolate packages and include dependent hidden works', async () => {

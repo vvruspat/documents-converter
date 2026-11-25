@@ -1,9 +1,12 @@
 import { readProject } from './legacy.js';
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import type { Pool } from 'pg';
+import { newProject } from './import.js';
+import { fillPackage, type PackageSource, type PackageRoute } from './registry-package.js';
+import type { PackageDocument } from '../document-register.js';
+import type { Pool, PoolClient } from 'pg';
 import {
-  projectSchema,
+  entry, projectSchema,
   validateProject,
   type Project,
   type ProjectSummary,
@@ -119,6 +122,65 @@ export class ProjectStore {
     } catch (e) {
       await client.query('ROLLBACK');
       throw e;
+    } finally {
+      client.release();
+    }
+  }
+  async registryPackage(source: PackageSource, client: Pool | PoolClient = this.pool) {
+    await this.ready();
+    const { rows } = await client.query<{ project: string; pack: string; name: string }>(
+      `SELECT id project, r->>'id' pack, r->'v'->>'name' name FROM ${this.ns}.construction_projects
+       CROSS JOIN LATERAL jsonb_array_elements(data->'rows') r
+       WHERE r->>'kind'='pack' AND (r->'v'->>'sourceDigest'=$1 OR r->'v'->>'sourceJob'=ANY($2::text[])) LIMIT 1`,
+      [source.digest, [source.job, source.root]]);
+    return rows[0];
+  }
+
+  async legacyPackageSources() {
+    await this.ready();
+    const { rows } = await this.pool.query<{ job: string; project: string; pack: string; name: string }>(
+      `SELECT r->'v'->>'sourceJob' job, id project, r->>'id' pack, r->'v'->>'name' name
+       FROM ${this.ns}.construction_projects CROSS JOIN LATERAL jsonb_array_elements(data->'rows') r
+       WHERE r->>'kind'='pack' AND r->'v' ? 'sourceJob' AND NOT (r->'v' ? 'sourceDigest')`);
+    return rows;
+  }
+
+  async importRegistry(source: PackageSource, route: PackageRoute, rows: PackageDocument[], scan: (index: number) => Promise<Buffer>) {
+    await this.ready();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [this.ns + ':registry-package']);
+      const duplicate = await this.registryPackage(source, client);
+      if (duplicate) {
+        await client.query('COMMIT');
+        return duplicate;
+      }
+      const result = route.projectId
+        ? await client.query(`SELECT id,data FROM ${this.ns}.construction_projects WHERE id=$1 FOR UPDATE`, [route.projectId])
+        : await client.query(`SELECT id,data FROM ${this.ns}.construction_projects
+          WHERE lower(trim(data->'v'->>'name'))=lower(trim($1)) ORDER BY id LIMIT 1 FOR UPDATE`, [route.projectName]);
+      const existing = result.rows[0];
+      if (route.projectId && !existing) throw new ConflictException('Выбранный проект больше недоступен.');
+      const id: string = existing?.id ?? randomUUID();
+      const project = existing ? readProject(existing.data) : await newProject(route.projectName, route.packageName);
+      const pack = existing ? entry('pack', { name: route.packageName }) : project.rows[0];
+      if (existing) project.rows.push(pack);
+      else project.v.object = source.object;
+      const documents = fillPackage(project, pack, source, rows);
+      this.validate(project);
+      if (existing)
+        await client.query(`UPDATE ${this.ns}.construction_projects SET data=$2,version=version+1 WHERE id=$1`, [id, project]);
+      else
+        await client.query(`INSERT INTO ${this.ns}.construction_projects(id,data) VALUES ($1,$2)`, [id, project]);
+      for (const [index, doc] of documents.entries())
+        await client.query(`INSERT INTO ${this.ns}.construction_assets(project,entry,name,data) VALUES ($1,$2,$3,$4)`,
+          [id, doc.id, doc.file, await scan(index)]);
+      await client.query('COMMIT');
+      return { project: id, pack: pack.id, name: pack.v.name };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
     } finally {
       client.release();
     }

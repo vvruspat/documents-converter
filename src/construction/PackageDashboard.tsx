@@ -145,7 +145,7 @@ function PackageCard({
               <Pencil size={14} />
               Изменить комплект
             </button>
-            <button className={s.text} disabled={!steps.length} onClick={() => download(pack.id)}>
+            <button className={s.text} disabled={!steps.length && !Object.values(pack.links).some(ids => ids.length)} onClick={() => download(pack.id)}>
               <Download size={14} />
               Выгрузить комплект
             </button>
@@ -168,6 +168,19 @@ export function PackageDashboard({
 }) {
   const records = useMemo(() => new Map(project.rows.map((r) => [r.id, r])), [project]);
   const packs = useMemo(() => packagePlan(project.rows), [project]);
+  const [focusedId, setFocusedId] = useState(() => new URLSearchParams(location.search).get('pack'));
+  const focused = packs.find(item => item.pack.id === focusedId);
+  if (focused) return (
+    <>
+      <button className={s.text} onClick={() => {
+        const url = new URL(location.href);
+        url.searchParams.delete('pack');
+        history.replaceState(null, '', url);
+        setFocusedId(null);
+      }}>Все комплекты проекта</button>
+      <PackageCard item={focused} initiallyOpen records={records} edit={edit} plan={plan} download={download} />
+    </>
+  );
   return (
     <>
       {packs.length > 1 && (

@@ -202,14 +202,14 @@ function Export({
   const works = project.rows.filter((r) => r.kind === 'work' && r.links.pack?.includes(pack));
   const byId = new Map(project.rows.map((r) => [r.id, r]));
   const included = withHiddenWorks(selected.length ? works.filter((r) => selected.includes(r.id)) : works, byId);
-  const count = included.length;
+  const count = included.length || Object.values(byId.get(pack)?.links || {}).flat().length;
   const reviews = included
     .map((work) => ({ work, ...evaluateStandardRules(work, byId) }))
     .filter((item) => item.changes.size);
   const assessments = assessWorks(byId);
   const findings = included.map((work) => ({ work, checklist: assessments.get(work.id)!.checklist }));
   const incomplete = findings.some((r) => r.checklist.some((c) => !c.present));
-  const blocked = findings.some((r) => r.checklist.some((c) => c.blocking && !c.present));
+  const blocked = findings.some((r) => r.checklist.some((c) => c.blocking && !c.present && (!r.work.file || !c.field)));
   async function exportZip() {
     setBusy(true);
     setError('');

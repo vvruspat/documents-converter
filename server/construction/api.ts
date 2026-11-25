@@ -1,3 +1,8 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { baseForm } from './forms.js';
 import 'reflect-metadata';
 import {
@@ -170,7 +175,16 @@ class ProjectsController {
     const p = await this.store.get(id),
       { pack, selected } = params.data;
     const archive = await report(p, pack, selected, (entry) => this.store.asset(id, entry, p.version));
-    download(res, archive.name, archive.data);
+    const directory = await mkdtemp(path.join(tmpdir(), 'project-export-'));
+    try {
+      const file = path.join(directory, 'package.zip');
+      await pipeline(archive.zip.generateNodeStream({ streamFiles: true, compression: 'DEFLATE' }), createWriteStream(file));
+      await new Promise<void>((resolve, reject) => {
+        res.download(file, safeFilename(archive.name), error => error ? reject(error) : resolve());
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 }
 @Module({})

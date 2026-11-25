@@ -9,6 +9,7 @@ import { Check, Download, FileText, LoaderCircle, RotateCcw, Trash2, Upload } fr
 type RegistryJob = {
   id: string; project?: string; originalName: string; resultName: string;
   status: 'queued' | 'working' | 'done' | 'error';
+  constructionPackage?: { project: string; pack: string; name: string }; packageError?: string;
   documentsTotal?: number; pages: number; processedPages: number; reviewPageCount?: number; recordCount: number; createdAt: string; error?: string;
 };
 const dateTime = new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -129,11 +130,11 @@ export function RegistryPage({ importExcel }: { importExcel: () => void }) {
     if (!uploading) select(event.dataTransfer.files);
   }
 
-  async function change(job: RegistryJob, kind: 'retry' | 'reprocess' | 'delete') {
+  async function change(job: RegistryJob, kind: 'retry' | 'reprocess' | 'delete' | 'package') {
     if (kind === 'delete' && !window.confirm('Удалить «' + job.originalName + '» и связанные сканы из каталога?')) return;
     setAction(job.id); setError('');
     try {
-      await api(`/api/registry/${job.id}${kind === 'retry' ? '/retry' : kind === 'reprocess' ? '/reprocess' : ''}`, { method: kind === 'delete' ? 'DELETE' : 'POST' });
+      await api(`/api/registry/${job.id}${kind === 'delete' ? '' : '/' + kind}`, { method: kind === 'delete' ? 'DELETE' : 'POST' });
       await refresh();
     } catch (reason) { setError((reason as Error).message); }
     finally { setAction(''); }
@@ -164,7 +165,7 @@ export function RegistryPage({ importExcel }: { importExcel: () => void }) {
       <Upload size={28} strokeWidth={1.4} />
       <h2>Перетащите сюда PDF-комплекты</h2>
       <button className="button" disabled={uploading} onClick={() => input.current?.click()}>{uploading ? 'Загружается…' : 'Выбрать PDF'}</button>
-      <p>{uploading ? `${uploadName} — загрузка${uploadPercent === null ? '…' : `: ${uploadPercent}%`}` : 'Каждый PDF станет отдельным реестром Excel'}</p>
+      <p>{uploading ? `${uploadName} — загрузка${uploadPercent === null ? '…' : `: ${uploadPercent}%`}` : 'Из каждого PDF соберём реестр Excel и комплект в проекте'}</p>
     </div>
     <p className="registry-note">Обработка большого PDF может занять время. После загрузки можно закрыть страницу и вернуться позже. Подсвеченные ячейки в Excel требуют проверки по оригиналу. Пересоздание повторно распознаёт все страницы.</p>
     <div className="registry-list"><div className="list-heading"><span>Реестры <span className="muted">{projectJobs.length}</span></span></div>
@@ -178,6 +179,8 @@ export function RegistryPage({ importExcel }: { importExcel: () => void }) {
             {job.status === 'queued' ? 'В очереди' : job.status === 'working' && job.documentsTotal !== undefined ? `Заполняем реестр: ${job.recordCount} из ${job.documentsTotal} документов` : job.status === 'working' ? `Обработано ${job.processedPages} из ${job.pages} стр.` : job.status === 'done' ? <><Check size={12} /> {job.recordCount} документов · {dateTime.format(new Date(job.createdAt))} · {job.resultName}</> : job.error}
             {!!job.reviewPageCount && <> · Страниц для проверки: {job.reviewPageCount}</>}
           </div>
+          {job.constructionPackage && <a href={'/projects?project=' + job.constructionPackage.project + '&pack=' + job.constructionPackage.pack}>Открыть комплект · {job.constructionPackage.name}</a>}
+          {job.packageError && <div role="status">{job.packageError} <button disabled={action === job.id} onClick={() => void change(job, 'package')}>Повторить сборку комплекта</button></div>}
           <progress className="registry-progress" max={(job.documentsTotal ?? job.pages) || 1} value={job.documentsTotal !== undefined ? job.recordCount : job.status === 'done' ? job.pages : job.processedPages} aria-label={`Обработка ${job.originalName}`} />
         </div>
         <div className="job-action">
