@@ -92,7 +92,7 @@ export function workChecklist(work: Entry, byId: Map<string, Entry>): CheckItem[
       evidence.set(check.document, row);
     }
   }
-  for (const key of ['materials', 'schemes', 'protocols']) for (const id of work.links[key] || []) addDocument(id);
+  for (const key of ['materials', 'schemes', 'protocols', 'attachments']) for (const id of work.links[key] || []) addDocument(id);
   for (const [key, { label, doc, bases }] of evidence) {
     items.push({
       section: 'evidence',

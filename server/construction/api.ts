@@ -4,6 +4,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ConflictException,
   Get,
   Inject,
   Module,
@@ -26,7 +27,7 @@ import { newProject, importBook } from './import.js';
 import { templateFile } from './office.js';
 import { certificate } from './certificates.js';
 import { incomingReport, report } from './report.js';
-import { formTypes } from '../../shared/construction.js';
+import { acceptsOriginal, formTypes } from '../../shared/construction.js';
 
 const fileUpload = FileInterceptor('file', {
   limits: { fileSize: 24 * 1024 * 1024, files: 1, fields: 4, fieldSize: 4 * 1024 * 1024 },
@@ -104,7 +105,11 @@ class ProjectsController {
         throw new BadRequestException('Некорректные данные проекта.');
       }
     }
-    const data = this.store.validate(project);
+    const filesOnly = project === undefined && files.length > 0;
+    const expected = revision(body.version);
+    const current = filesOnly ? await this.store.get(id) : undefined;
+    if (current && current.version !== expected) throw new ConflictException('Версия проекта изменилась.');
+    const data = current ?? this.store.validate(project);
     const entries = body.entry === undefined ? [] : Array.isArray(body.entry) ? body.entry : [body.entry];
     if (entries.length !== files.length || new Set(entries).size !== entries.length)
       throw new BadRequestException('Каждый файл должен соответствовать отдельной записи.');
@@ -112,7 +117,7 @@ class ProjectsController {
     for (const [index, f] of files.entries()) {
       fileRequired(f);
       const row = data.rows.find((r) => r.id === entries[index]);
-      if (!row || !['material', 'protocol', 'scheme', 'template'].includes(row.kind))
+      if (!row || !acceptsOriginal(row.kind))
         throw new BadRequestException('Выберите запись для файла.');
       const name = safeFilename(f.originalname);
       if (row.kind === 'template') {
@@ -123,7 +128,8 @@ class ProjectsController {
       row.file = name;
       uploads.push({ entry: row.id, name, data: f.buffer });
     }
-    return this.store.save(id, revision(body.version), data, uploads);
+    const saved = await this.store.save(id, expected, data, uploads);
+    return filesOnly ? { version: saved.version } : saved;
   }
   @Get(':id/file/:entry')
   async file(

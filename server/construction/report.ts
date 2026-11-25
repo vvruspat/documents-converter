@@ -174,6 +174,29 @@ export async function report(
       throw new BadRequestException('Комплект превышает 300 МБ. Разделите его на несколько комплектов.');
     zip.file(file, data);
   };
+  async function addDocument(r: Entry, num: string) {
+    if (r.file && !originals.has(r.id)) {
+      const file = await asset(r.id),
+        filePath = 'Приложения/' + String(originals.size + 1).padStart(3, '0') + ' ' + safe(file.name);
+      add(filePath, file.data);
+      originals.set(r.id, filePath);
+    }
+    register.push({
+      key: r.id,
+      type:
+        r.v.docType ||
+        { scheme: 'Исполнительная схема', material: 'Документ качества', protocol: 'Протокол', attachment: 'Приложение' }[
+          r.kind as 'scheme'
+        ],
+      name: r.v.name,
+      number: r.v.number || '',
+      date: localDate(r.v.date),
+      org: r.v.issuer || '',
+      pages: r.v.pages || '',
+      file: originals.get(r.id) || 'Оригинал не загружен',
+      act: num,
+    });
+  }
   const actTitle: Record<string, string> = {
     hidden: 'Акт освидетельствования скрытых работ',
     structure: 'Акт освидетельствования ответственных конструкций',
@@ -204,6 +227,12 @@ export async function report(
     const prefix = String(index + 1).padStart(3, '0') + ' ' + safe(t.v.name + ' ' + num);
     const folder = 'Акты/' + prefix,
       actFile = folder + '/' + prefix + '.docx';
+    let original = '';
+    if (w.file) {
+      const source = await asset(w.id);
+      original = folder + '/Оригинал ' + safe(source.name);
+      add(original, source.data);
+    }
     register.push({
       type: t.v.name,
       name: (t.v.description || actTitle[form]) + '. ' + name,
@@ -211,7 +240,7 @@ export async function report(
       date: localDate(v.date),
       org: p.v.contractor || '',
       pages: v.pages || '',
-      file: actFile,
+      file: original || actFile,
       act: num,
       key: w.id,
     });
@@ -219,29 +248,7 @@ export async function report(
     const attachments = [...schemes, ...protocols, ...materials].sort(
       (a, b) => order.indexOf(a.kind) - order.indexOf(b.kind),
     );
-    for (const r of attachments) {
-      if (r.file && !originals.has(r.id)) {
-        const file = await asset(r.id),
-          filePath = 'Приложения/' + String(originals.size + 1).padStart(3, '0') + ' ' + safe(file.name);
-        add(filePath, file.data);
-        originals.set(r.id, filePath);
-      }
-      register.push({
-        key: r.id,
-        type:
-          r.v.docType ||
-          { scheme: 'Исполнительная схема', material: 'Документ качества', protocol: 'Протокол' }[
-            r.kind as 'scheme'
-          ],
-        name: r.v.name,
-        number: r.v.number || '',
-        date: localDate(r.v.date),
-        org: r.v.issuer || '',
-        pages: r.v.pages || '',
-        file: originals.get(r.id) || 'Оригинал не загружен',
-        act: num,
-      });
-    }
+    for (const document of [...attachments, ...aggregate('attachments')]) await addDocument(document, num);
     let matText = join(...materials.map(label)),
       docText = join(...[...schemes, ...protocols].map(label));
     const annex: string[] = [];
@@ -329,7 +336,7 @@ export async function report(
         ...linked(r, 'standards').map((s) => [s.v.name, s.v.description].filter(Boolean).join(' ')),
       ]),
     );
-    const files = join(matText, docText, ...avks, v.manual);
+    const files = join(matText, docText, ...aggregate('attachments').map(label), ...avks, v.manual);
     Object.assign(props, {
       Номер_акта: num,
       Наименование_объекта: join(p.v.object || p.v.name, p.v.address),
@@ -398,6 +405,13 @@ export async function report(
       actFile,
       await renderForm(templates.get(t.id)!, props, table(materials), form === 'structure', [...changes.keys()]),
     );
+  }
+  if (!selected.length || selectedWorks.length === p.rows.filter((r) => r.kind === 'work' && r.links.pack?.includes(pack)).length) {
+    const included = new Set(register.map((r) => r.key));
+    for (const id of Object.values(byId.get(pack)!.links).flat()) {
+      const doc = byId.get(id);
+      if (doc && !included.has(id)) await addDocument(doc, '');
+    }
   }
   const head = ['№', 'Вид', 'Наименование', 'Номер', 'Дата', 'Организация', 'Листов', 'Файл в комплекте', 'Акт'];
   const registerRows = (rs: RegisterRow[]) =>
