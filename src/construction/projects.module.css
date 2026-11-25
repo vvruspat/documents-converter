@@ -833,31 +833,31 @@
   min-width: 0;
   margin: 6px 0;
 }
-.package summary {
+.package > summary {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 12px 14px;
 }
-.package summary {
+.package > summary {
   cursor: pointer;
   list-style: none;
   font-size: 12px;
   color: var(--sub);
 }
-.package summary::-webkit-details-marker {
+.package > summary::-webkit-details-marker {
   display: none;
 }
-.package summary strong {
+.package > summary strong {
   font-size: 14px;
   color: var(--fg);
   flex: 1;
   overflow-wrap: anywhere;
 }
-.package summary svg {
+.package > summary svg {
   flex: none;
 }
-.package[open] summary > svg:last-child {
+.package[open] > summary > svg:last-child {
   transform: rotate(180deg);
 }
 .status {
@@ -880,6 +880,19 @@
   border-top: 1px solid var(--edge);
   padding: 6px 12px 10px;
 }
+.documentGroups summary {
+  cursor: pointer;
+  padding: 6px 0;
+  color: var(--fg);
+}
+.documentGroups details {
+  margin-left: 1rem;
+}
+.documentGroups .text {
+  white-space: normal;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
 .planForm {
   display: flex;
   gap: 8px;
@@ -895,11 +908,11 @@
   padding: 6px 10px;
 }
 @media (max-width: 640px) {
-  .package summary {
+  .package > summary {
     flex-wrap: wrap;
     gap: 6px;
   }
-  .package summary strong {
+  .package > summary strong {
     min-width: 65%;
   }
   .planForm {
@@ -957,6 +970,9 @@
 
 .registerActions {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-end;
   margin-top: 6px;
 }

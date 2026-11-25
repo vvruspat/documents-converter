@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ChevronDown, Download, FileArchive, Pencil, Plus } from 'lucide-react';
+import { ChevronDown, Download, ExternalLink, FileArchive, Pencil, Plus } from 'lucide-react';
 import { WorkRegister } from './WorkRegister';
 import { packagePlan } from '../../shared/readiness';
 import { entry, type Entry, type SavedProject } from '../../shared/construction';
@@ -15,6 +15,50 @@ const columns: Column<Pack>[] = [
   { key: 'works', label: 'Число актов', value: (r) => r.steps.length },
   { key: 'ready', label: 'Готовые акты', value: (r) => r.ready },
 ];
+function PackageDocuments({ pack, records, edit }: {
+  pack: Entry;
+  records: Map<string, Entry>;
+  edit: (entry: Entry) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const groups = new Map<string, Entry[]>();
+  for (const [key, title] of [
+    ['materials', 'Материалы и сертификаты'],
+    ['schemes', 'Исполнительные схемы'],
+    ['protocols', 'Протоколы'],
+    ['attachments', 'Реестры и приложения'],
+  ]) {
+    for (const id of pack.links[key] || []) {
+      const doc = records.get(id);
+      if (!doc) continue;
+      const act = key === 'protocols' && /^акт(?:\s|$)/i.test(doc.v.docType || doc.v.name);
+      const label = act ? 'Акты контроля и испытаний' : title;
+      const items = groups.get(label);
+      if (items) items.push(doc);
+      else groups.set(label, [doc]);
+    }
+  }
+  if (!groups.size) return null;
+  return (
+    <details className={s.documentGroups} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary>Документы комплекта</summary>
+      {open && Array.from(groups, ([label, docs]) => (
+        <details key={label}>
+          <summary>{label} · {docs.length}</summary>
+          <ul>
+            {docs.map((doc) => (
+              <li key={doc.id}>
+                <button className={s.text} onClick={() => edit(doc)}>
+                  {Array.from(new Set([doc.v.docType, doc.v.name, doc.v.number].filter(Boolean))).join(' · ')}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ))}
+    </details>
+  );
+}
 function PackageCard({
   item,
   initiallyOpen,
@@ -67,21 +111,15 @@ function PackageCard({
             <button className={s.secondary} onClick={() => edit(entry('work', { name: '' }, { pack: [pack.id] }))}>
               <Plus size={15} /> Новый акт
             </button>
+            {pack.v.sourceJob && (
+              <a className={s.text} href={`/api/registry/${encodeURIComponent(pack.v.sourceJob)}/source`}
+                target="_blank" rel="noreferrer">
+                <ExternalLink size={14} /> Исходный том PDF
+              </a>
+            )}
           </div>
           {steps.length > 0 && <WorkRegister steps={steps} packId={pack.id} edit={edit} />}
-          {Object.values(pack.links).some((ids) => ids.length > 0) && (
-            <details>
-              <summary>Документы комплекта</summary>
-              <ul>
-                {Object.values(pack.links).flat().map((id) => {
-                  const doc = records.get(id);
-                  return doc && <li key={id}><button className={s.text} onClick={() => edit(doc)}>
-                    {[doc.v.docType, doc.v.name, doc.v.number].filter(Boolean).join(' · ')}
-                  </button></li>;
-                })}
-              </ul>
-            </details>
-          )}
+          <PackageDocuments pack={pack} records={records} edit={edit} />
           <form
             className={s.planForm}
             onSubmit={(e) => {

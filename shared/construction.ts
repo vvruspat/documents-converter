@@ -19,7 +19,7 @@ export const labels: Record<Kind, string> = {
   person: 'Ответственные лица',
   material: 'Материалы и сертификаты',
   scheme: 'Исполнительные схемы',
-  protocol: 'Протоколы',
+  protocol: 'Протоколы и акты контроля',
   attachment: 'Реестры и приложения',
   standard: 'Нормативы',
   template: 'Шаблоны актов',
